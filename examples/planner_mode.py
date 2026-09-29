@@ -1,10 +1,12 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Planner mode with real models: the strongest protection.
 
 A privileged model writes the plan from the trusted request only. A quarantined
 model (no tools) reads the untrusted ticket. The interpreter tracks where every
 value came from, so rewording or encoding data can't get it past the checks.
 
-    pip install "taskvault[anthropic]"
+    export ANTHROPIC_API_KEY=...        (Windows: set ANTHROPIC_API_KEY=...)
     python examples/planner_mode.py
 """
 

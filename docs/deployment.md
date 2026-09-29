@@ -12,7 +12,7 @@ Pin the version. Read the changelog before upgrading, and rerun `taskvault test`
 
 ## 2. Keys
 
-The customer's key encrypts cached records, stored secrets, placeholders and traces.
+The customer's key encrypts cached records and placeholders; deposit boxes use it as the vault key.
 
 - **Cloud (recommended):** use `KMSKeyProvider` with the customer's own KMS key (e.g. AWS KMS). Only a wrapped data key is stored on disk; revoking the KMS key revokes access.
 - **Local:** `taskvault keys init /secure/volume/customer.key` creates a 256-bit key with owner-only permissions. Keep it out of version control, back it up separately from the data, and restrict who can read it.
@@ -34,7 +34,7 @@ Everything depends on this: the values you pass to `start_task` (e.g. `customer_
 ## 5. Roll out in shadow mode first
 
 1. Run with `mode="shadow"` (or `taskvault serve --shadow`) for one to two weeks. Nothing is blocked.
-2. `taskvault plan --audit audit.jsonl --policy taskvault.yaml` shows what *would* have been blocked, and which paths were never exercised (month-end, refunds, rare cases).
+2. `taskvault report --audit audit.jsonl --policy taskvault.yaml` shows what *would* have been blocked, and which paths were never exercised (month-end, refunds, rare cases).
 3. Fix false alarms in the policy; declare rare paths up front.
 4. Switch to enforce.
 
@@ -49,18 +49,11 @@ Everything depends on this: the values you pass to `start_task` (e.g. `customer_
 
 - Give high-risk sinks `risk: high` and pass an `approver` that asks a person (Slack, email, a queue). With no approver configured, high-risk actions fail closed.
 - Use `risk: medium` and `on_flag` for actions worth a look but not worth blocking.
-- After a few weeks of clean traffic, `taskvault baseline learn --audit audit.jsonl` and run with `--baseline baseline.json` to flag unusual behaviour. Review with `taskvault review`.
+- Set per-task limits (`max_calls`) and data budgets so a hijacked agent can only do a bounded amount. Review flagged actions with `taskvault review`.
 
 ## 8. Secrets
 
-For the sharpest values (cards, bank accounts, IDs), consider moving them into the vault entirely:
-
-```bash
-taskvault store tokenize customers.csv --fields card_number --source db.customers \
-    --owner-field id --owner-name customer_id --key customer.key --store secrets.db --out customers.tokenized.csv
-```
-
-Load the tokenized file back into your database: it now holds `tvref_...` references instead of card numbers. `SecretStore.forget_owner()` deletes one customer's secrets for erasure requests.
+For the sharpest values (cards, bank accounts, IDs), keep them in deposit boxes instead of your own database: `taskvault boxes put customers.csv ...` (next section). The high-security tier needs both the vault's key and the holder's key to open.
 
 ## 9. Deposit boxes
 
@@ -77,5 +70,5 @@ taskvault logs decisions to the standard `logging` module under the `taskvault` 
 ## 11. Incidents
 
 1. `taskvault audit show audit.jsonl --decision block` to see what was stopped.
-2. If you ran with `--record`, `taskvault replay <trace> --agent yourmodule:agent --remove "suspect text"` reruns the session with every tool stubbed, to find the likely cause. Results go to a separate investigation store; the audit log gets one entry per replay.
-3. Pin traces you need to keep: `taskvault traces pin <id>`. Others expire after the retention period.
+2. `taskvault audit verify audit.jsonl` to confirm the log wasn't changed; for deposit boxes, `taskvault boxes log <box>`.
+3. The audit entries show which task, template, action and (fingerprinted) recipient was involved; your agent framework's own logs show what the model was given.

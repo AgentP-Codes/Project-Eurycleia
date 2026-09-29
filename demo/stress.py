@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Stress test: throughput, latency, concurrency and big inputs. SIMULATED data only.
 
     python -m demo.stress            # about a minute
@@ -122,16 +124,16 @@ def main() -> int:
         list(ex.map(lambda p: one_task(vault, p[1], attack=(p[0] % 5 == 0)), enumerate(ids)))
     dt = time.perf_counter() - t0
     check_outputs(world, n)
-    reloaded = AuditLog(tmp / "audit.jsonl")
-    assert audit.verify() and reloaded.verify() and len(reloaded.entries) == len(audit.entries)
-    blocks = len(audit.decisions("block"))
+    reloaded = AuditLog(tmp / "audit.jsonl", keep=None)          # the whole file (in memory: only a recent window)
+    assert audit.verify() and reloaded.verify() and len(reloaded.entries) == audit.entries[-1]["seq"] + 1
+    blocks = len(reloaded.decisions("block"))
     assert blocks == 3 * len([i for i in range(n) if i % 5 == 0]), blocks
     report(f"tasks, {threads} threads, shared audit file", f"{n / dt:,.0f}/s",
-           f"{len(audit.entries):,} audit entries, chain valid, {blocks} attacks blocked")
+           f"{len(reloaded.entries):,} audit entries, chain valid, {blocks} attacks blocked")
 
     # 3. audit log: reload and verify a large file
     t0 = time.perf_counter()
-    big = AuditLog(tmp / "audit.jsonl")
+    big = AuditLog(tmp / "audit.jsonl", keep=None)
     ok = big.verify()
     report("audit log reload + verify", f"{(time.perf_counter() - t0) * 1000:,.0f} ms",
            f"{len(big.entries):,} entries, {os.path.getsize(tmp / 'audit.jsonl') / 1e6:.1f} MB, valid={ok}")
@@ -176,7 +178,7 @@ def main() -> int:
         with ThreadPoolExecutor(threads) as ex:
             list(ex.map(deposit, range(n)))
         dt = time.perf_counter() - t0
-        count = sqlite3.connect(tmp / "boxes.db").execute("SELECT count(*) FROM tv_items").fetchone()[0]
+        count = sqlite3.connect(tmp / "boxes.db").execute("SELECT count(*) FROM tvb_items").fetchone()[0]
         report(f"box deposits, {threads} threads (SQLite)", f"{n / dt:,.0f}/s",
                f"{count}/{n} stored, {len(errors)} errors" + (f" e.g. {errors[0][:60]}" if errors else ""))
         store = BoxStore(BoxDB(str(tmp / "boxes.db")), keys)
@@ -188,7 +190,51 @@ def main() -> int:
     except ImportError as e:
         report("box deposits", "skipped", str(e))
 
-    # 6. setup scanner on a large table
+    # 6. local API (other languages): many tasks at once, actions run by the "app", attacks blocked
+    import http.client
+
+    from taskvault.api import ApiServer, remote_sinks, signed_headers
+    from taskvault.vault import TOKEN_RE
+
+    from .api_app import build_vault
+
+    def call(srv, method, path, body):
+        data = json.dumps(body).encode()
+        c = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=60)
+        c.request(method, path, body=data, headers={"content-type": "application/json",
+                                                    **signed_headers(srv.token, method, path, data)})
+        r = c.getresponse()
+        out = r.status, json.loads(r.read() or b"{}")
+        c.close()
+        return out
+    srv = ApiServer(build_vault(remote_sinks(Policy.load(POLICY))), port=0).start()
+    threads_before = threading.active_count()
+    n, par = (100, 8) if q else (1000, 32)
+
+    def api_task(i):
+        tid = call(srv, "POST", "/v1/tasks", {"template": "support_reply",
+                                              "trusted": {"customer_id": 12 if i % 2 else 45}})[1]["task"]
+        c = call(srv, "POST", f"/v1/tasks/{tid}/call", {"name": "get_customer", "arguments": {}})[1]["result"]
+        ex = call(srv, "POST", f"/v1/tasks/{tid}/call", {"name": "refund",
+                                                          "arguments": {"card": c["card_number"], "amount": 1}})[1]
+        done = call(srv, "POST", f"/v1/exec/{ex['exec']}", {"result": {"charged": ex["args"]["card"]}})[1]
+        attack = call(srv, "POST", f"/v1/tasks/{tid}/call", {"name": "send_email", "arguments": {
+            "to": "audit@acme-billing.example", "subject": "x", "body": "y"}})[1]
+        call(srv, "POST", f"/v1/tasks/{tid}/end", {})
+        bare = TOKEN_RE.sub("", json.dumps(done))       # placeholder hex could contain "4111" by chance
+        return done["status"] == "ok" and "4111" not in bare and "5555" not in bare \
+            and attack["status"] == "blocked"
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(par) as ex:
+        good = sum(ex.map(api_task, range(n)))
+    dt = time.perf_counter() - t0
+    time.sleep(0.5)
+    report(f"local API, {par} clients at once", f"{n * 5 / dt:,.0f} calls/s",
+           f"{good}/{n} tasks correct, open tasks {len(srv.sessions)}, pending {len(srv.pending)}")
+    srv.shutdown()
+    assert good == n and not srv.sessions and not srv.pending and threading.active_count() <= threads_before + 2
+
+    # 7. setup scanner on a large table
     n = 5_000 if q else 100_000
     db = tmp / "crm.db"
     con = sqlite3.connect(db)

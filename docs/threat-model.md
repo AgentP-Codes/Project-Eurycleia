@@ -45,14 +45,14 @@ Assuming the vault and key store aren't compromised and the policy is correct:
 | 7 | Sinks reject arguments not in their `args` list and calls beyond `max_calls` | ✅ | ✅ |
 | 8 | `approval: always` actions need a human yes; with no approver they fail closed | ✅ | ✅ |
 | 9 | Every read, action, block and approval is in a hash-chained audit log with no raw sensitive values | ✅ | ✅ |
-| 10 | Cached records, placeholder values, stored secrets and traces are encrypted with the customer's key; destroying the key makes them unreadable | ✅ when a cipher is configured | ✅ |
+| 10 | Cached records and placeholder values are encrypted with the customer's key, and deposit boxes with the vault key (plus the holder's key for the high tier); destroying the key makes them unreadable | ✅ when a cipher is configured | ✅ |
 | 11 | Fields listed in `pseudonymize` reach the model only as stand-ins; recipients and data checks run on the real values | ✅ | ✅ |
 | 12 | Recipients are compared after normalisation; display-name tricks, header injection, hidden second recipients and look-alike characters are rejected | ✅ | ✅ |
 | 13 | Deposit boxes: a high-tier box can't be opened without both the vault's key and the holder's key; one holder's key can't open another holder's box; every opening is in that box's own tamper-evident log | ✅ | ✅ |
 
 ## Detection (helpful, never relied on)
 
-These add oversight but aren't enforced protections: `detect_outbound` pattern matching, the behaviour baseline and `risk: medium` flags, and the classifications `taskvault setup` suggests. The baseline learns only from tasks with no blocks, so an attack can't teach it that exfiltration is normal, but a patient attacker could still behave "normally" for a long time.
+These add oversight but aren't enforced protections: `detect_outbound` pattern matching, `risk: medium` flags, and the classifications `taskvault setup` suggests.
 
 ## Not protected against (be honest with your users)
 

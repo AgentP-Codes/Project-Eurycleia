@@ -1,0 +1,26 @@
+{
+  "name": "taskvault-client",
+  "version": "0.5.0",
+  "description": "taskvault for TypeScript/JavaScript agents: a zero-dependency client for `taskvault api`.",
+  "license": "Apache-2.0",
+  "author": "AgentP-Codes",
+  "repository": "github:AgentP-Codes/Task-Vault-Name-is-bound-to-Change-",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

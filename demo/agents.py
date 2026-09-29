@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """SIMULATED. Two scripted agents and two ways of giving them tools.
 
 No LLM is needed: `HijackedAgent` plays a model that has *fully* obeyed a

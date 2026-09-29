@@ -1,6 +1,8 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """A real support agent behind taskvault: Postgres CRM, SMTP email, Claude as the model.
 
-    pip install "taskvault[anthropic]" psycopg
+    pip install "taskvault[postgres]"
     taskvault keys init ./customer.key
     export ANTHROPIC_API_KEY=... DATABASE_URL=postgresql://...
     python examples/support_agent.py 12 "I was charged twice, can I get a refund?"

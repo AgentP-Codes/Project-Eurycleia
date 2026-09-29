@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Run: python -m demo            (enforce mode)
         python -m demo --shadow   (shadow mode: log what would be blocked, block nothing)
 """

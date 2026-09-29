@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """SIMULATED. A tiny fake company: a CRM, internal documents, a support inbox and an outbox.
 
 All data is invented. Card numbers are standard payment-network test numbers.
