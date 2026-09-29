@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.5.0
+
+**Licence**
+- The taskvault core is now licensed under AGPL-3.0-only (versions up to 0.4.2 stay under Apache-2.0). The language adapters in `adapters/` stay under Apache-2.0 so they can be used in any application. See NOTICE.
+
+**Leaner**
+- Removed: session recording and replay (`--record`, `taskvault replay`, `taskvault traces`), the behaviour baseline ("pattern of life": `taskvault baseline`, `--baseline`) and the old secret store (`taskvault store tokenize`, `--store`). Recordings kept an extra copy of real data; firm per-task limits, budgets and approvals do the baseline's job more predictably; deposit boxes replace the secret store. Records still holding old `tvref_` references are refused with a clear message
+- `taskvault plan` is now `taskvault report --audit FILE` (`plan` still works)
+- The core action check is split into named steps (same checks, same order); the one-time 0.4 box upgrade loads only when used
+- Core code about 7% smaller (6,273 to 5,826 lines); 21 commands down to 16; tests run in about 40 s instead of 63 s with nothing dropped but the removed features' own tests
+- Reviewed by a separate AI agent: same behaviour in every path of the action check, no protection lost
+
+**Stress testing before release** (load, fuzzing, soak, mixed workloads and a separate review agent; with Claude Opus 5.5, not an independent audit). Found and fixed:
+- The `domain` summary returned the whole value when it wasn't an email (e.g. a card number)
+- Masking of action results missed reformatted values (dashes instead of spaces, capitals) and secrets the task had seen but that weren't part of that action; it now catches any case and spacing, and every secret the task handed out
+- A second net removes secret-looking data (cards, bank accounts, tax file numbers, keys) that the task never saw from action results, and logs that it did (found by fuzzing: an app returning another customer's card)
+- A long-running server kept every audit entry in memory as well as on disk; now a recent window (10,000) is kept and checks stream the file
+- A customer forgotten at the moment a record was being saved could fail the save, or leave items sealed with an old box key; saves now detect this and retry
+- `taskvault connect`: a Windows BOM or broken JSON crashed it; a private settings file (which can hold API keys) became readable by others; a settings file that is a symbolic link was replaced by a copy
+- The AI web client could be held open indefinitely by a server sending one byte at a time; there's now an overall deadline
+- Java adapter reused closed connections under load; the API now says it closes each connection, and the Java client uses HTTP/1.1
+- Invalid Unicode in an API request caused an internal error instead of a clean refusal
+- First test run on Windows (451 passed, 2 failed), both fixed: the audit log's Windows file lock could be released at the wrong position when reading stopped early, hiding the real error; and a refused oversized API request reached the app as a dropped connection instead of "too large"
+- The second net once mistook a placeholder ending in eight digits for a tax file number and cut it (twice in 2,000 tasks); placeholders are now skipped
+- Second Windows run: tests now work from any folder, and a slow app no longer makes the next request on the same task fail; the agent demo reports crashed runs as ERROR instead of "safe"
+- Measured: 2,000 tasks from Python, Node, Go and Java at once with no errors; 120,000 random API requests with no crashes or leaks; an 8-minute soak with flat threads, files and (after the fix) memory
+
+**Easy start**
+- `taskvault connect claude-desktop|hermes|mcp-json` puts taskvault in front of an agent's existing MCP servers by editing its settings file (backup saved first). Starts in watch mode: logs what it would block, blocks nothing
+- `taskvault report` (what would have been blocked), `taskvault enforce` / `taskvault watch` (switch modes), `taskvault disconnect` (restores the original settings exactly)
+
+**Other languages**
+- `taskvault api`: a local API so agents in other languages get the same protection. Adapters with no dependencies for TypeScript/JavaScript (Node 18+, with helpers for OpenAI, Anthropic and Vercel AI SDK tool formats), Go and Java (17+). Tested against the simulated demo data, including a Vercel AI SDK agent with a scripted model
+- Approved actions run in the app's own language with the real values; what they return (or the error they throw) is masked before the model sees it; blocked actions never reach the app's code
+- The token never travels: every request and reply is signed (HMAC-SHA256, time-limited, no replays), so a program posing as taskvault on the same port gets nothing and can't trigger actions. Local only, web pages refused, connection and size limits
+- A separate AI agent reviewed the local API and adapters; its findings were fixed before release (a long error could be cut before masking, an existing loose connection file could expose the token, an impostor server on the port, idle connections holding threads, and smaller issues)
+- Masking also covers real values in result keys, as numbers, and written without spaces (for the Python SDK too)
+
+**Data protections**
+- Free-text scrub: personal data inside text fields (notes, ticket bodies) is replaced before the model sees it
+- Derived answers: a task can get "card ends 4242" or "is over 18: yes" instead of the value itself
+- Fields on request: the agent asks for the fields it needs; unrequested fields are never read
+- Data budgets per task (reads, records, fields)
+- Model trust levels: `model="external"` (default) or `"internal"` for a model you run yourself
+
+**Smaller deposit boxes, stronger logs**
+- New storage format: about 2.2 KB per customer (was about 7.2 KB) and about 150 bytes of log per read (was about 2.1 KB); reads about 3 times faster. Encryption unchanged
+- Field names now sit inside one encrypted entry per record, so the database doesn't even show how many fields a record has
+- Box logs are chained with a key derived from the vault key: rewriting a log now needs the key (0.4 used a plain hash chain)
+- `taskvault boxes compact` archives old log entries (compressed, encrypted, tied to the database) and leaves a summary that keeps the chain verifiable
+- `taskvault boxes migrate` upgrades 0.4 box databases in one step; it checks the key and every old log first
+- Forgetting a holder overwrites the deleted data in SQLite; fields dropped from a record are deleted and logged
+- A second review (by a separate AI agent) found and we fixed: compaction removing newer entries after a clock jump, migration accepting a wrong key, a Postgres deadlock between concurrent writers, archives not forced to disk before deleting, archives from another database being accepted
+- Shared audit file: a process opening the log could read another's half-written line
+
+**Fewer libraries (supply chain)**
+- Claude, OpenAI-compatible APIs (including Ollama) and Gemini now use a small built-in HTTPS client instead of each company's library: installing taskvault adds no AI libraries (the `[anthropic]`, `[openai]`, `[gemini]`, `[ollama]` extras are now empty)
+- The client always verifies certificates, refuses redirects (so a key can't be forwarded), never sends a key over plain http except to this computer, limits reply size, and keeps keys out of error messages
+- Rate limits are waited out; a used-up quota or credit balance stops cleanly
+- Every library is locked to an exact version and checksum (`requirements/*.lock`); CI installs with `--require-hashes` and checks for known vulnerabilities on every change and weekly (pip-audit)
+- GitHub Actions are pinned to exact commits; Dependabot proposes updates weekly
+- When a release is published, a workflow runs the tests and vulnerability check, builds the package, writes a software bill of materials (SBOM) and checksums, signs a record of how the files were built (GitHub build attestation), and attaches them to the release
+- Tests also run on Windows and macOS
+
+**Agent frameworks and connectors**
+- `protect(task)` for CrewAI and LangChain / LangGraph; `OllamaProvider` for local models
+- Connectors (tested against simulated responses): HubSpot, Zendesk, Stripe, Xero, Slack, Outlook, Gmail, MongoDB
+
+**Security fixes** (from a reported review and real-model testing)
+- Planner mode now applies document-level sensitivity labels (`label_field` / `label_map`)
+- Personal-data detector runs in near-linear time on adversarial input (was quadratic)
+- Recorded traces must be encrypted (`--record` needs `--key`) and are owner-only
+- `forget_holder` removes every index row for the holder
+- An empty `fields` list means the usual fields, not none
+- A secret bound to an argument (such as a card for a refund) must be the vault's own placeholder; a typed-in card number is blocked
+- CI runs with read-only permissions; block log lines carry no details
+
 ## 0.4.2
 
 Security and reliability fixes from a round of stress testing (with Claude Opus 5.5). Not an independent review.

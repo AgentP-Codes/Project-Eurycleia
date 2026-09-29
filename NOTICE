@@ -3,6 +3,15 @@ Copyright 2026 AgentP-Codes (https://github.com/AgentP-Codes)
 
 Originally created by AgentP-Codes.
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
-Under section 4(d) of that licence, anyone who redistributes this work or a
-derivative of it must keep this NOTICE file and its attribution.
+The taskvault core is licensed under the GNU Affero General Public License, version 3 only
+(AGPL-3.0-only; see LICENSE). If you modify taskvault and let people use it over a network,
+you must offer them the source code of your modified version.
+
+Additional term under section 7(b) of the AGPL: anyone who conveys this work or a modified
+version must keep this NOTICE file and the "Created by AgentP-Codes" attribution in it.
+
+The language adapters in adapters/ (TypeScript, Go, Java) are licensed separately under the
+Apache License, Version 2.0 (see adapters/LICENSE), so they can be used in any application.
+
+Versions of taskvault up to and including 0.4.2 were released under the Apache License 2.0
+and remain available under it.
