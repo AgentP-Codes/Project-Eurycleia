@@ -115,11 +115,12 @@ VALUE_PATTERNS: list[tuple[str, re.Pattern[str], Any]] = [
                            r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"), None),
     ("card_number", re.compile(r"\b(?:\d[ -]?){12,18}\d\b"), luhn_ok),
     ("iban", re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){10,30}\b"), iban_ok),
-    ("bank_account", re.compile(r"\b\d{3}-?\d{3}[ ,/]+\d{6,10}\b"), None),
+    ("bank_account", re.compile(r"\b\d{3}-?\d{3}[ ,/]{1,3}\d{6,10}\b"), None),
     ("au_medicare", re.compile(r"\b[2-6]\d{3} ?\d{5} ?\d{1,2}\b"), medicare_ok),
     ("au_abn", re.compile(r"\b\d{2} ?\d{3} ?\d{3} ?\d{3}\b"), abn_ok),
     ("au_tfn", re.compile(r"\b\d{3} ?\d{3} ?\d{2,3}\b"), tfn_ok),
-    ("email", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"), None),
+    # lengths bounded as in the email standard, so a long run like a.a.a.a... is scanned in linear time
+    ("email", re.compile(r"\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}\b"), None),
     ("phone", re.compile(r"(?:\+\d{1,3}[ -]?)?\(?0?[2-478]\)?[ -]?\d{2,4}[ -]?\d{3}[ -]?\d{3}\b"), None),
     ("phone", re.compile(r"(?:\+61[ -]?|\(0[2378]\)[ -]?|\b0[2378][ -]?)\d{4}[ -]?\d{4}\b"), None),   # AU landlines
     ("phone", re.compile(r"\+\d{1,3}(?:[ -]?\(?\d{1,4}\)?){2,5}\d\b"), None),                       # international
@@ -203,19 +204,19 @@ def scan_text(text: str) -> list[tuple[str, int, int]]:
     for kind, pattern, check in VALUE_PATTERNS:
         pos = 0
         while (m := pattern.search(text, pos)) is not None:
-            found = [(m.start(), m.end())]
-            nxt = m.end()
-            if check is not None and not check(m.group(0)):
-                # A run of digits can hold a real value next to other numbers ("card 4111 ... 1111 123"):
-                # try the pieces inside it, longest first, then carry on from the next chunk, not the
-                # end of the run, so a value that starts inside the run is still found.
-                found = _checked_pieces(text, m.start(), m.end(), pattern, check)
-                gap = re.search(r"[ \-]+", text[m.start():m.end()])
-                nxt = m.start() + gap.end() if gap else m.end()
+            whole_run = check is not None
+            if whole_run:
+                # A run of digit groups can hold a real value next to other numbers ("card 4111 ... 1111 123"):
+                # look at every piece of the whole run once (usual layouts first, then longest), then carry on
+                # after the run. Even when the first match passes the check, it may not be the real value.
+                found, nxt = _checked_run(text, m.start(), kind, pattern, check)
+            else:
+                found, nxt = [(m.start(), m.end())], m.end()
             for start, end in found:
                 over = clash(start, end)
                 if over is not None:
-                    nxt = min(nxt, over)         # overlaps something more sensitive: look again after it
+                    if not whole_run:
+                        nxt = min(nxt, over)     # overlaps something more sensitive: look again after it
                     continue
                 bisect.insort(starts, start)
                 spans[start] = (kind, end)
@@ -223,20 +224,110 @@ def scan_text(text: str) -> list[tuple[str, int, int]]:
     return [(spans[s][0], s, spans[s][1]) for s in starts]
 
 
-def _checked_pieces(text: str, start: int, end: int, pattern: re.Pattern[str], check: Any) -> list[tuple[int, int]]:
-    """Sub-spans of text[start:end], split at spaces/dashes, that match `pattern` on their own and pass `check`."""
-    groups = [(m.start() + start, m.end() + start) for m in re.finditer(r"[^ \-]+", text[start:end])]
-    out: list[tuple[int, int]] = []
-    n = len(groups)
-    for size in range(n - 1, 0, -1):
-        for i in range(0, n - size + 1):
-            s, e = groups[i][0], groups[i + size - 1][1]
-            if any(s < oe and os_ < e for os_, oe in out):
-                continue
-            piece = text[s:e]
-            if pattern.fullmatch(piece) and check(piece):
-                out.append((s, e))
-    return out
+# For the checked kinds: how a run of groups looks, and how many letters/digits a real value has.
+_RUNS = {"card_number": (re.compile(r"\d+(?:[ -]\d+)*"), 13, 19),
+         "iban": (re.compile(r"[A-Z0-9]+(?: [A-Z0-9]+)*"), 14, 34),
+         "au_medicare": (re.compile(r"\d+(?: \d+)*"), 10, 11),
+         "au_abn": (re.compile(r"\d+(?: \d+)*"), 11, 11),
+         "au_tfn": (re.compile(r"\d+(?: \d+)*"), 8, 9)}
+
+
+def _checked_run(text: str, start: int, kind: str, pattern: re.Pattern[str], check: Any) -> tuple[list, int]:
+    """The valid values inside the run of groups starting at `start`, and where the run ends.
+
+    Each piece of the run (a stretch of whole groups with the right number of letters and digits) is checked
+    once, longest first, so the work grows linearly with the run's length."""
+    run_re, lo, hi = _RUNS[kind]
+    run = run_re.match(text, start)
+    end = run.end() if run else start + 1
+    groups = [(g.start() + start, g.end() + start) for g in re.finditer(r"[^ \-]+", text[start:end])]
+    counts = [0]
+    for s, e in groups:
+        counts.append(counts[-1] + (e - s))
+    candidates = []
+    for i in range(len(groups)):
+        for j in range(i, min(len(groups), i + hi)):
+            n = counts[j + 1] - counts[i]
+            if n > hi:
+                break
+            if n >= lo:
+                candidates.append((n, i, j))
+    if kind == "card_number":
+        candidates = _luhn_candidates(text, groups, candidates)
+    usual = _usual_card if kind == "card_number" else (lambda _groups, _c: False)
+    # a card written the usual way (4-4-4-4, 4-6-5, 4-6-4, 4-4-4-4-3, or unbroken) comes before other windows, so a
+    # longer run that happens to pass the check can't take the card's digits and leave part of it visible
+    candidates.sort(key=lambda c: (not usual(groups, c), -c[0], c[1]))
+    owner = [-1] * len(groups)                          # which accepted value each group belongs to
+    parent: list[int] = []                              # accepted values; overlapping usual-layout ones merge
+    span: list[list[int]] = []
+    is_usual: list[bool] = []
+
+    def root(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for c in candidates:
+        _n, i, j = c
+        hit = {root(owner[g]) for g in range(i, j + 1) if owner[g] >= 0}
+        if all(owner[g] >= 0 for g in range(i, j + 1)):
+            continue                                    # wholly inside values already found
+        this_usual = usual(groups, c)
+        if hit and not (this_usual and all(is_usual[x] for x in hit)):
+            continue                                    # overlaps a value already found
+        piece = text[groups[i][0]:groups[j][1]]
+        if not (pattern.fullmatch(piece) and check(piece)):
+            continue
+        # Two overlapping card-shaped windows that both pass (a card next to other 4-digit numbers): there's no
+        # telling which is the card, so both are hidden, as one value.
+        k = len(parent)
+        parent.append(k)
+        span.append([i, j])
+        is_usual.append(this_usual)
+        for x in hit:
+            parent[x] = k
+            span[k] = [min(span[k][0], span[x][0]), max(span[k][1], span[x][1])]
+        for g in range(i, j + 1):
+            if owner[g] < 0:
+                owner[g] = k
+    out = [(groups[span[k][0]][0], groups[span[k][1]][1]) for k in range(len(parent)) if parent[k] == k]
+    return sorted(out), end
+
+
+_DOUBLE = [0, 2, 4, 6, 8, 1, 3, 5, 7, 9]
+_USUAL_LAYOUTS = ([4, 4, 4, 4], [4, 6, 5], [4, 6, 4], [4, 4, 4, 4, 3])
+
+
+def _usual_card(groups: list[tuple[int, int]], c: tuple[int, int, int]) -> bool:
+    lens = [groups[g][1] - groups[g][0] for g in range(c[1], c[2] + 1)]
+    return len(lens) == 1 or lens in _USUAL_LAYOUTS
+
+
+def _luhn_candidates(text: str, groups: list[tuple[int, int]], candidates: list) -> list:
+    """Keep only the windows whose Luhn sum works out, computed in constant time per window from running
+    totals (the full check still runs on what's kept). Without this a long run of digits that never passes
+    would cost a full check for every window."""
+    digits: list[int] = []
+    first: list[int] = []                 # index in `digits` of each group's first digit
+    for s, e in groups:
+        first.append(len(digits))
+        digits += [int(c) for c in text[s:e]]           # int(): also full-width and other decimal digits
+    # plain[k] / doubled[k]: running totals where the digits at even (resp. odd) indexes are doubled
+    even_doubled, odd_doubled = [0], [0]
+    for k, d in enumerate(digits):
+        even_doubled.append(even_doubled[-1] + (_DOUBLE[d] if k % 2 == 0 else d))
+        odd_doubled.append(odd_doubled[-1] + (d if k % 2 == 0 else _DOUBLE[d]))
+    keep = []
+    for c in candidates:
+        _n, i, j = c
+        a, b = first[i], first[j] + (groups[j][1] - groups[j][0])      # digit range [a, b)
+        # Luhn doubles every second digit counting from the last one: indexes of the other parity to b-1
+        totals = odd_doubled if (b - 1) % 2 == 0 else even_doubled
+        if (totals[b] - totals[a]) % 10 == 0:
+            keep.append(c)
+    return keep
 
 
 def redact(text: str) -> str:

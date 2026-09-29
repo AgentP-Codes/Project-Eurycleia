@@ -449,7 +449,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             body = json.loads(raw or b"{}")
-        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        except (ValueError, RecursionError):        # also bad UTF-8 and numbers too long to convert
             self._send(400, {"error": "body isn't valid JSON"})
             return
         if not isinstance(body, dict):

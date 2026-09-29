@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1
+
+Security fixes from a private report on 0.5.0 (reproduced and fixed here; tested with simulated data and scripted calls, not live models).
+
+**Fixed**
+- **Customer data in links (high).** A fooled agent could put a customer's details, or their stand-ins, inside a link or image address in an email to that same customer; the vault then filled in the real values and, when the email was opened, they went to the linked website. Actions are now blocked when a link to a website outside `internal_domains` (or the new `link_domains`) carries a protected or secret value the task has seen (or two or more words of one), a placeholder or a stand-in. Links are read the way browsers read them: in HTML attributes (the whole value), Markdown, CSS and plain text, with or without `//` after the scheme, and decoded (percent-encoding, `+`, HTML entities, backslashes as slashes). A review of the first version of this fix found three ways around it (links without slashes, quotes inside a link, multi-word values in some attributes); all are fixed and tested
+- **Slow scanning (high).** The email pattern took quadratic time on text like `a.a.a.a...`: one ~1 MB ticket could freeze the whole process for about an hour. Its lengths are now bounded. Our own wider timing tests found two more slow cases in the same scanner (long runs of short digit groups, and IBAN-like text, 8-50 s per 200 KB); runs of groups are now examined once each, with a constant-time Luhn pre-check. Every pattern is now tested on hostile input; the worst case is now about 1-2 s per MB
+- **Cards next to other numbers.** The scanner could take a run of digits that happened to pass the card check instead of the real card beside it, leaving part of the card visible. Cards written the usual way (4-4-4-4, 4-6-5, 4-6-4, 4-4-4-4-3, or unbroken) now come first, and when two overlapping card-shaped runs both pass, both are hidden. In 40,000 random trials with a card among other numbers, dates and amounts, every card was hidden whole (0.5.0: about 14% were not). Tax file and Medicare numbers written right next to other numbers are found about as often as before, which is not always (a known limitation of pattern matching). Digits in other scripts (such as full-width) are handled; an early version of this change crashed on them
+- **Parallel calls (medium).** `max_calls` and data budgets could be exceeded when an agent framework ran tool calls on one task in parallel (LangGraph does by default): 30 of 30 emails went out under `max_calls: 3`. Each task now checks and counts one call at a time (planner-mode checks too). Human approvals, opening a deposit box, `on_flag` handlers and the sink itself run outside that lock, so a slow person, handler or app doesn't hold up the task; a refused approval doesn't use up the limit
+- **Echoed secrets (low-medium).** Sink results are now masked for a secret with any punctuation between its digits (such as an em dash), and in base64 and hex. A secret split across several fields can still get through (documented)
+- **Recipient patterns (low).** `*` no longer reaches past one part of an address: `*acme.example` doesn't match `evil@notacme.example`, and `https://*.partner.com/*` doesn't match `https://evil.com/x.partner.com/y`. `**` matches across path segments; `?` and `[...]` stay within one part too, and `^` in a class is literal (as before). `taskvault check` warns about patterns that match look-alike or any domains (`*acme.example`, `*@*acme.example`, `https://*.com`)
+- **Behaviour change:** recipients other than email addresses (URLs, channel ids) are now compared with their case as written, except a URL's scheme and host (a URL path can be case-sensitive). A policy entry `c0support1` no longer matches `C0SUPPORT1`
+- **Crashes on unusual input (low).** A number over 4,300 digits ended the MCP proxy (and upstream replies or API requests with one got an unclear error); arguments nested thousands of levels deep raised an internal error instead of being blocked. Both are now refused cleanly
+- **Non-ASCII owner addresses (low, usability).** A customer whose address on file has non-ASCII letters (`josé@example.com`) could never be emailed. Such an address is now accepted when it exactly equals the trusted one, and never through a pattern; look-alikes are still blocked
+
+**New**
+- `link_domains` policy setting: other websites whose links may carry customer data
+- 180 regression tests for the above; every fix was reviewed by separate AI agents (not an independent security audit), and their findings on the first versions of these fixes are fixed too
+
 ## 0.5.0
 
 **Licence**

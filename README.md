@@ -9,7 +9,7 @@
 >
 > Provided "as is", without warranty of any kind, under the [AGPL-3.0 licence](LICENSE). Its features describe design goals, not guarantees. Please read the full [Disclaimer](#disclaimer) before using it.
 
-**Status:** v0.5.0 beta · Feedback, issues and ideas are very welcome.
+**Status:** v0.5.1 beta · Feedback, issues and ideas are very welcome.
 
 **How this was built:** taskvault was designed and directed by @AgentP-Codes. Much of the code, tests and documentation were written with the help of Claude (Anthropic's AI). The live model tests were run by the project using its own API keys. All the code is open for review.
 

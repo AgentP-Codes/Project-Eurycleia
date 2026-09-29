@@ -27,16 +27,19 @@ tracks labels through the data flow instead of matching strings.
 
 from __future__ import annotations
 
-import fnmatch
+import base64
 import hashlib
 import hmac
+import html
 import itertools
 import json
 import logging
 import os
 import re
 import secrets
+import threading
 import unicodedata
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -53,7 +56,7 @@ from .policy import Policy, SinkRule, TaskTemplate
 log = logging.getLogger("taskvault")
 
 TOKEN_RE = re.compile(r"\[\[vault:([a-z0-9_]+):([a-f0-9]{8})\]\]")
-LOOSE_TOKEN_RE = re.compile(r"\[\[\s*vault\s*:[^\]]*\]\]?", re.I)   # anything that looks like a placeholder
+LOOSE_TOKEN_RE = re.compile(r"\[\[\s{0,8}vault\s{0,8}:[^\]]{0,200}\]\]?", re.I)   # anything like a placeholder
 MIN_MATCH_LEN = 4  # shorter values produce too many false matches
 _NO_RULE = SinkRule()
 
@@ -188,12 +191,23 @@ class Task:
         self._pseudo: dict[str, Any] = {}                   # pseudonym -> real value
         self._revealed: dict[str, Any] = {}                 # placeholder -> value opened from a deposit box
         self._used = {"reads": 0, "records": set(), "fields": set()}   # for the task's data budget
+        # One read or action at a time per task, so call limits and data budgets hold when an agent framework
+        # runs tool calls in parallel. The sink itself runs outside the lock (see act).
+        self._lock = threading.RLock()
+        self._flags: list[FlagEvent] = []                   # flags waiting for on_flag, called outside the lock
 
     # ------------------------------------------------------------------ reads
     def read(self, source: str, key: Any = None, fields: list[str] | None = None) -> dict[str, Any]:
         """Return one record for the model: only allowed fields (or just the ones asked for),
         secrets as placeholders, personal details as stand-ins, free text scrubbed, plus any
         safe summaries the policy defines."""
+        try:
+            with self._lock:
+                return self._read(source, key, fields)
+        finally:
+            self._fire_flags()
+
+    def _read(self, source: str, key: Any, fields: list[str] | None) -> dict[str, Any]:
         self._reported = set()
         if source not in self.vault.policy.sources:
             self._decide("read", "unknown source", shown=f"unknown source {source!r}",
@@ -331,15 +345,14 @@ class Task:
         self._seen[str(value)] = label
         return token
 
-    def _unseal(self, token: str) -> Any:
+    def _unseal(self, token: str, sink: str = "?") -> Any:
         sealed, _ = self._tokens[token]
         value = self.vault.cipher.decrypt(sealed, aad=token) if self.vault.cipher else sealed
         if is_box_ref(value):
             if self.vault.boxes is None:
                 raise BoxLocked("this value is in a deposit box but no box store is configured")
             # second key: the holder's (may ask a person to approve)
-            value = self.vault.boxes.reveal(value, task=self.id, reason=f"{self.template.name} -> "
-                                                                         f"{getattr(self, '_sink', '?')}")
+            value = self.vault.boxes.reveal(value, task=self.id, reason=f"{self.template.name} -> {sink}")
             self._revealed[token] = value                   # so this task's sink results can be masked
         return value
 
@@ -360,7 +373,27 @@ class Task:
 
         Every check below runs in order; in enforce mode the first failure raises Blocked, in shadow mode
         each failure is only recorded as "would block"."""
+        # The checks and the call count run under the task's lock, so limits hold when tool calls run in
+        # parallel. A human approval, opening a deposit box and the sink itself run outside it, so a slow
+        # person or sink doesn't hold up the task's other calls (the call is already counted).
+        try:
+            with self._lock:
+                rule, args, recipient_args, recipients, n, shown = self._prepare(sink, args)
+        finally:
+            self._fire_flags()
+        if rule.approval == "always":
+            try:
+                self._approve(sink, "policy requires a human to approve this action", shown)
+            except Blocked:
+                with self._lock:                            # a refused call doesn't use up the limit
+                    self._calls[sink] = max(0, self._calls.get(sink, 1) - 1)
+                raise
+        return self._run_sink(sink, rule, args, recipient_args, recipients, n)
+
+    def _prepare(self, sink: str, args: dict[str, Any]) -> tuple:
+        """Every check; then the call is counted. Runs under the task's lock."""
         self._reported = set()
+        self._check_shape(sink, args)
         shown = args                                        # what the agent sent (shown in approvals)
         args = {k: self._unpseudo(v) for k, v in args.items()}   # checks run on real values
         if sink not in self.vault.sinks:
@@ -375,15 +408,23 @@ class Task:
         text = _flatten(args)
         self._check_placeholders(sink, rule, args, text, recipients)
         self._check_raw_values(sink, text, recipients)
+        self._check_links(sink, rule, shown, args)
         if self.vault.policy.detect_outbound and recipients:
             from .detect import KINDS, scan_text
             for kind, _s, _e in scan_text(TOKEN_RE.sub(" ", text)):
                 if KINDS[kind].level == "secret":
                     self._decide("act", f"outbound message contains what looks like a {KINDS[kind].label}",
                                  sink=sink)
-        if rule.approval == "always":
-            self._approve(sink, "policy requires a human to approve this action", shown)
-        return self._run_sink(sink, rule, args, recipient_args, recipients, n)
+        self._calls[sink] = n
+        return rule, args, recipient_args, recipients, n, shown
+
+    def _check_shape(self, sink: str, args: dict[str, Any]) -> None:
+        """Arguments nested absurdly deep, or numbers too long to turn into text, can't be checked: refuse them
+        (in shadow mode too, since the checks after this couldn't run)."""
+        problem = _shape_problem(args)
+        if problem:
+            self.vault.audit.record("act", task=self.id, sink=self._safe_name(sink), decision="block", reason=problem)
+            raise Blocked(problem)
 
     def _check_arguments_and_limits(self, sink: str, rule: SinkRule, args: dict[str, Any]) -> int:
         if rule.args is not None and (extra := sorted(set(args) - set(rule.args))):
@@ -459,13 +500,43 @@ class Task:
                                        f"may not be sent to this recipient", sink=sink,
                                  recipient=self.vault.fp(r))
 
+    def _check_links(self, sink: str, rule: SinkRule, shown: dict[str, Any], args: dict[str, Any]) -> None:
+        """Customer data inside a link to someone else's website leaves the company as soon as the link is
+        opened (or an image in an email loads), whoever the message is addressed to. So a link to a site
+        outside internal_domains / link_domains may not carry any protected or secret value this task has
+        seen, a placeholder, or a stand-in (which the vault would otherwise turn back into the real value)."""
+        allowed = [*self.vault.policy.internal_domains, *self.vault.policy.link_domains]
+        values = [v for v in self._seen if len(v) >= MIN_MATCH_LEN]
+        stand_ins = list(self._pseudo)
+        for which, strings in (("shown", _strings(shown)), ("real", _strings(args))):
+            for text in strings:
+                for url in _urls(text):
+                    if _host_allowed(url, allowed):
+                        continue
+                    forms = [(f, re.sub(r"[\W_]", "", f)) for f in _url_forms(url)]
+                    hit = any(TOKEN_RE.search(f) for f, _ in forms)
+                    if which == "shown":
+                        hit = hit or any(p.lower() in f for p in stand_ins for f, _ in forms)
+                    else:
+                        hit = hit or any(_in_link(v, f, sq) for v in values for f, sq in forms)
+                    if hit:
+                        self._decide("act", "customer data inside a link to an outside website",
+                                     shown="a link in this action points to a website outside the company and "
+                                           "carries customer data; links may only carry customer data to the "
+                                           "company's own sites", sink=sink)
+                        return
+
+    def _secret_values(self) -> list[str]:
+        """The real values of every secret this task has handed out as a placeholder and could unlock (a box
+        item only once opened), for masking encoded copies of them in sink results."""
+        return [real for real, token in self._mask_map({}, {}).items() if TOKEN_RE.fullmatch(token)]
+
     def _run_sink(self, sink: str, rule: SinkRule, args: dict[str, Any], recipient_args: list[str],
                   recipients: list[Any], n: int) -> Any:
-        """All checks passed (or shadow mode): unlock placeholders, run the sink, mask what comes back."""
+        """All checks passed (or shadow mode) and the call is counted: unlock placeholders, run the sink and
+        mask what comes back. Runs outside the task's lock."""
         classes = [self._recipient_class(r, rule) for r in recipients]
         sizes = {k: len(str(v)) for k, v in args.items()}
-        self._calls[sink] = n
-        self._sink = sink
         if self.vault.mode == "enforce":
             for a in recipient_args:     # the sink gets the checked address, not the text the agent wrote
                 v = args.get(a)
@@ -474,7 +545,7 @@ class Task:
                 elif isinstance(v, (list, tuple)):
                     args[a] = [_canonical(x) for x in v]
         try:
-            resolved = {k: self._resolve(v) for k, v in args.items()}
+            resolved = {k: self._resolve(v, sink) for k, v in args.items()}
         except BoxLocked as e:
             self.vault.audit.record("act", task=self.id, sink=sink, decision="block", reason=f"box locked: {e}")
             raise Blocked(f"box locked: {e}") from e
@@ -488,12 +559,16 @@ class Task:
                                 decision="allow")
         if rule.risk == "medium":
             self._flag(sink, ["medium-risk action"])
-        mask = self._mask_map(args, resolved)
+            self._fire_flags()
+        with self._lock:                                    # a consistent view of what this task handed out
+            mask = self._mask_map(args, resolved)
+            secrets_out = self._secret_values()
         try:
             result = self.vault.sinks[sink](**resolved)
         except Exception as e:  # noqa: BLE001 - the error text may quote real values; mask them
-            raise SinkError(f"{sink} failed: {type(e).__name__}: {redact_secrets(_mask(str(e), mask))}") from None
-        result = _mask(result, mask)
+            text = redact_secrets(_mask(str(e), mask, secrets_out))
+            raise SinkError(f"{sink} failed: {type(e).__name__}: {text}") from None
+        result = _mask(result, mask, secrets_out)
         # second net: secret-looking data this task never handed out (e.g. another customer's card that the
         # sink's own code looked up) is removed too, so it can't reach the model through a result
         caught: set[str] = set()
@@ -508,6 +583,14 @@ class Task:
     # ------------------------------------------------------------- tool layer
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         """Dispatch an agent-facing tool name using the policy's `tools` map."""
+        with self._lock:
+            tm = self._tool_for(name, arguments)
+        if tm.read:
+            key = arguments.get(tm.key_arg) if tm.key_arg and arguments else None
+            return self.read(tm.read, key, fields=(arguments or {}).get("fields"))
+        return self.act(tm.act, **dict(arguments or {}))
+
+    def _tool_for(self, name: str, arguments: dict[str, Any] | None) -> Any:
         arguments = dict(arguments or {})
         tm = self.vault.policy.tools.get(name)
         if tm is None:
@@ -518,10 +601,7 @@ class Task:
             if arg in arguments and not _json_type_ok(arguments[arg], kind):
                 self._decide("act", f"tool argument has the wrong type (expected {kind})",
                              shown=f"argument {arg!r} of {name!r} must be a {kind}", tool=name)
-        if tm.read:
-            key = arguments.get(tm.key_arg) if tm.key_arg else None
-            return self.read(tm.read, key, fields=arguments.get("fields"))
-        return self.act(tm.act, **arguments)
+        return tm
 
     def tool_specs(self) -> list[dict[str, Any]]:
         """Tool definitions (name, description, JSON schema) for this task, for LLM adapters."""
@@ -559,14 +639,14 @@ class Task:
                     continue
                 rec = self.vault._fetch(m.group(1), _coerce(m.group(2)))
                 if rec and rec.get(m.group(3)):
-                    out.extend(_norm(v) for v in _as_list(rec[m.group(3)]))
+                    out.extend(_norm(v, unicode_ok=True) for v in _as_list(rec[m.group(3)]))
             else:
                 out.append(_norm_pattern(spec))   # literal address or glob like *@acme.example
         return out
 
     def _owner_ok(self, label: Label, recipient: Any) -> bool:
         """Protected data may go to its owner, or to the company's own domains (it already holds it)."""
-        r = _norm(recipient)
+        r = _norm(recipient, unicode_ok=True)
         if r in ("", _INVALID):
             return False
         if "@" in r and r.rsplit("@", 1)[-1] in self.vault.policy.internal_domains:
@@ -574,7 +654,7 @@ class Task:
         if label.owner == "company":
             return False
         contact = self.vault._owner_contact(label.owner)
-        return contact is not None and _norm(contact) == r
+        return contact is not None and _norm(contact, unicode_ok=True) == r
 
     def _approve(self, sink: str, reason: str, args: dict[str, Any]) -> None:
         req = ApprovalRequest(self.id, self.template.name, sink, reason, dict(args))
@@ -584,14 +664,14 @@ class Task:
         if not ok:
             raise Blocked(f"{reason}: {'denied' if self.vault.approver else 'no approver configured'}")
 
-    def _resolve(self, value: Any) -> Any:
+    def _resolve(self, value: Any, sink: str = "?") -> Any:
         if isinstance(value, str):
-            return TOKEN_RE.sub(lambda m: str(self._unseal(m.group(0))) if m.group(0) in self._tokens
+            return TOKEN_RE.sub(lambda m: str(self._unseal(m.group(0), sink)) if m.group(0) in self._tokens
                                 else m.group(0), value)
         if isinstance(value, list):
-            return [self._resolve(v) for v in value]
+            return [self._resolve(v, sink) for v in value]
         if isinstance(value, dict):
-            return {k: self._resolve(v) for k, v in value.items()}
+            return {k: self._resolve(v, sink) for k, v in value.items()}
         return value
 
     def _unpseudo(self, value: Any) -> Any:
@@ -634,7 +714,7 @@ class Task:
         return out
 
     def _recipient_class(self, recipient: Any, rule: SinkRule) -> str:
-        r = _norm(recipient)
+        r = _norm(recipient, unicode_ok=True)
         if "@" in r and r.rsplit("@", 1)[-1] in self.vault.policy.internal_domains:
             return "internal"
         for spec in rule.allowed_recipients:
@@ -644,9 +724,20 @@ class Task:
         return "listed"
 
     def _flag(self, sink: str, reasons: list[str]) -> None:
+        """Record a flag now; your on_flag handler is called once the task's lock is released (see _fire_flags),
+        so a slow handler can't hold up the task's other calls."""
         self.vault.audit.record("flag", task=self.id, sink=sink, reasons=reasons, decision="flag")
         if self.vault.on_flag:
-            self.vault.on_flag(FlagEvent(self.id, self.template.name, sink, reasons))
+            with self._lock:
+                self._flags.append(FlagEvent(self.id, self.template.name, sink, reasons))
+
+    def _fire_flags(self) -> None:
+        if not self._flags:
+            return
+        with self._lock:
+            events, self._flags = self._flags, []
+        for event in events:
+            self.vault.on_flag(event)
 
     def _decide(self, kind: str, reason: str, shown: str | None = None, **fields: Any) -> None:
         """Block (or, in shadow mode, record) an action.
@@ -686,14 +777,23 @@ _PLAIN_ID_RE = re.compile(r"[a-z0-9+][a-z0-9+._:/-]*")          # phone numbers,
 _DISPLAY_RE = re.compile(r"([^<>@\"\\]*)<([^<>]+)>")
 
 
-def _norm(v: Any) -> str:
+_UNICODE_EMAIL_RE = re.compile(r"[^\s@<>\"(),;:\\\[\]]{1,64}@[^\s@<>\"(),;:\\\[\]./]{1,63}"
+                               r"(?:\.[^\s@<>\"(),;:\\\[\]./]{1,63}){1,8}")
+
+
+def _norm(v: Any, unicode_ok: bool = False) -> str:
     """Canonical form for comparing recipients.
 
     Accepts exactly one plain address ("a@b.com", any case, surrounding spaces) or
     "Display Name <a@b.com>" with no '@' in the name; or, for non-email recipients, one plain
-    identifier. Anything else (a second address, comments, quoted parts, stray dots, control or
-    invisible characters, look-alike letters, non-text values) normalises to a value that never
-    matches a trusted recipient, so it's blocked rather than guessed.
+    identifier (compared with its letters as written: a URL path or channel id can be case-sensitive;
+    only a URL's scheme and host are lower-cased). Anything else (a second address, comments, quoted
+    parts, stray dots, control or invisible characters, look-alike letters, non-text values) normalises
+    to a value that never matches a trusted recipient, so it's blocked rather than guessed.
+
+    `unicode_ok` lets through an address with non-ASCII letters (jos\u00e9@example.com) in its standard
+    (NFC) form. Such an address is only ever compared for exact equality with one from trusted data,
+    never matched against a pattern (see _matches), so a look-alike can't stand in for it.
     """
     if v is None:
         return ""
@@ -701,18 +801,168 @@ def _norm(v: Any) -> str:
         return _INVALID
     if any(c in v for c in "\r\n\t\x00") or any(unicodedata.category(c) in ("Cf", "Cc") for c in v):
         return _INVALID                      # header injection or invisible characters
-    if unicodedata.normalize("NFKC", v) != v or not v.isascii():
-        return _INVALID                      # look-alike characters
+    if not v.isascii():
+        if not unicode_ok or unicodedata.normalize("NFC", v) != v:
+            return _INVALID                  # look-alike characters
+        s = v.strip()
+        if "<" in s or ">" in s:
+            m = _DISPLAY_RE.fullmatch(s)
+            if not m:
+                return _INVALID
+            s = m.group(2).strip()
+        s = s.lower()
+        return s if _UNICODE_EMAIL_RE.fullmatch(s) else _INVALID
     s = v.strip()
     if "<" in s or ">" in s:
         m = _DISPLAY_RE.fullmatch(s)
         if not m:
             return _INVALID
         s = m.group(2).strip()
-    s = s.lower()
     if "@" in s:
+        s = s.lower()
         return s if _EMAIL_RE.fullmatch(s) else _INVALID
-    return s if _PLAIN_ID_RE.fullmatch(s) else _INVALID
+    if not _PLAIN_ID_RE.fullmatch(s.lower()):
+        return _INVALID
+    m = re.match(r"([a-z][a-z0-9+.\-]*://[^/?#]*)(.*)", s, re.I | re.S)
+    return m.group(1).lower() + m.group(2) if m else s
+
+
+_MAX_DEPTH = 64
+
+
+def _shape_problem(value: Any) -> str | None:
+    """Why a value can't be checked safely, or None. Iterative, so it can't itself run out of stack."""
+    stack = [(value, 0)]
+    while stack:
+        v, depth = stack.pop()
+        if depth > _MAX_DEPTH:
+            return f"arguments are nested more than {_MAX_DEPTH} levels deep"
+        if isinstance(v, int) and not isinstance(v, bool) and v.bit_length() > 10_000:
+            return "a number in the arguments is too long"
+        if isinstance(v, dict):
+            stack.extend((x, depth + 1) for x in v.keys())
+            stack.extend((x, depth + 1) for x in v.values())
+        elif isinstance(v, (list, tuple, set)):
+            stack.extend((x, depth + 1) for x in v)
+    return None
+
+
+def _strings(value: Any) -> list[str]:
+    """Every piece of text in a value (strings and dict keys), without recursion."""
+    out, stack = [], [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            stack.extend(v.keys())
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple, set)):
+            stack.extend(v)
+    return out
+
+
+# Links in text. A link starts at a web scheme (with or without slashes: browsers read "https:host" as
+# "https://host"), any "scheme://", "//", "www.", or a bare domain or IP address followed by a path or query.
+_LINK_START = re.compile(
+    r"(?:https?|ftps?|wss?|file|javascript|vbscript):|[a-z][a-z0-9+.\-]{0,31}://|//|"
+    r"(?<![\w.@-])www\.|(?<![\w.@-])(?:[a-z0-9-]{1,63}\.){1,8}[a-z]{2,24}(?=[/?#:\\])|"
+    r"(?<![\w.@-])\d{1,3}(?:\.\d{1,3}){3}(?=[/?#:\\])", re.I)
+# Where a link can run on past spaces and quotes of the other kind: a quoted HTML attribute or CSS value (the
+# whole value, from the first link start to its closing quote), and a Markdown target.
+_ATTR_VALUE = re.compile(r"""(?:=|url\()\s*(?:"([^"]{0,8192})"|'([^']{0,8192})')""", re.I)
+_MD_TARGET = re.compile(r"\]\(\s*(<[^<>]{1,8192}>|[^)\s]{1,8192})", re.I)
+_PLAIN_LINK_END = re.compile(r"[\s\"'<>`]")
+_WEB_SCHEMES = {"http", "https", "ftp", "ftps", "ws", "wss"}
+_NO_LOAD_SCHEMES = {"mailto", "tel", "sms", "data", "cid", "about"}      # nothing is fetched from a website
+
+
+def _urls(text: str) -> list[str]:
+    """Candidate links in one piece of text, read generously: as written and with HTML entities decoded,
+    backslashes as slashes, and control characters, tabs and line breaks removed inside attribute values
+    (as browsers do). A candidate may run on past the real end of a link; that only makes the check stricter."""
+    if not re.search(r"[:/\\]|www\.|&", text, re.I):
+        return []
+    out = []
+    for t in {text, html.unescape(text)}:
+        t = t.replace("\\", "/")
+        for m in _ATTR_VALUE.finditer(t):
+            value = re.sub(r"[\x00-\x20\x7f]", "", m.group(1) if m.group(1) is not None else m.group(2))
+            if (ls := _LINK_START.search(value)) is not None:
+                out.append(value[ls.start():])
+        for m in _MD_TARGET.finditer(t):
+            out.append(m.group(1).strip("<>"))
+        pos = 0
+        while (ls := _LINK_START.search(t, pos)) is not None:
+            stop = _PLAIN_LINK_END.search(t, ls.end())
+            end = stop.start() if stop else len(t)
+            end = min(end, ls.start() + 8192)
+            out.append(t[ls.start():end])
+            pos = max(end, ls.end())
+    return [u for u in dict.fromkeys(x.strip() for x in out) if u]
+
+
+def _url_host(url: str) -> str | None:
+    """The website a link loads from, read the way browsers do (any number of slashes or backslashes after a
+    web scheme, the part after the last '@' before the path, no port); "" if it can't be told; None for
+    links that don't load anything from a website (mailto:, tel:, data: ...)."""
+    u = url.strip().replace("\\", "/")
+    m = re.match(r"([a-z][a-z0-9+.\-]*):", u, re.I)
+    if m and not re.match(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+:\d", u, re.I):     # "host.com:8080/x" is not a scheme
+        scheme, rest = m.group(1).lower(), u[m.end():]
+        if scheme in _NO_LOAD_SCHEMES:
+            return None
+        if scheme in _WEB_SCHEMES:
+            rest = rest.lstrip("/")
+        elif rest.startswith("//"):
+            rest = rest[2:]
+        else:
+            return ""                                    # javascript: and unknown schemes: never allowed
+    else:
+        rest = u.lstrip("/")
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    host = urllib.parse.unquote(authority.rpartition("@")[2])
+    if host.startswith("["):
+        return host.lower()
+    host = host.split(":")[0].strip().rstrip(".").lower()
+    return host if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", host) else ""
+
+
+def _host_allowed(url: str, allowed: list[str]) -> bool:
+    host = _url_host(url)
+    if host is None:
+        return True
+    return bool(host) and any(host == d or host.endswith("." + d) for d in allowed)
+
+
+def _url_forms(url: str) -> list[str]:
+    """A link as written and decoded (percent-encoding, '+' for space, HTML entities), lower-cased."""
+    forms, cur = [url], url
+    for _ in range(3):
+        nxt = html.unescape(urllib.parse.unquote_plus(cur))
+        if nxt == cur:
+            break
+        forms.append(nxt)
+        cur = nxt
+    return [f.lower() for f in forms]
+
+
+def _in_link(value: str, link: str, squeezed_link: str) -> bool:
+    """A value in a (lower-cased) link: as written, with punctuation and spaces dropped, or, for a value of
+    several words (a name, an address), two or more of its words of 4+ letters each standing on their own
+    ("?first=Priya&last=Shah"). One common word alone ("Shah", "King") isn't enough: ordinary links contain
+    them. So a plain-text link, which ends at the first space, can still carry one word of a value."""
+    v = value.lower()
+    if v in link:
+        return True
+    squeezed = re.sub(r"[\W_]", "", v)
+    if len(squeezed) >= 6 and squeezed in squeezed_link:
+        return True
+    words = {w for w in re.split(r"[\s,]+", v) if len(w) >= 4 and re.search(r"[^\W\d_]", w)}
+    if len(words) < 2:
+        return False
+    found = sum(1 for w in words if re.search(r"(?<![^\W_])" + re.escape(w) + r"(?![^\W_])", link))
+    return found >= 2
 
 
 def _json_type_ok(value: Any, kind: str) -> bool:
@@ -724,7 +974,7 @@ def _json_type_ok(value: Any, kind: str) -> bool:
     return checks.get(kind, lambda v: True)(value)
 
 
-_SEP = r"[\s.\-_/]*"
+_SEP = r"[\W_]{0,3}"      # between the digits of a number: any punctuation or spaces (an em dash, a dot...)
 
 
 def _mask_patterns(mask: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
@@ -738,7 +988,7 @@ def _mask_patterns(mask: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
         digits = re.sub(r"\D", "", real)
         alnum = re.sub(r"[\W_]", "", real)
         if len(digits) >= 6 and len(digits) >= 0.6 * len(alnum):
-            core = re.sub(r"[\s.\-_/]", "", real)
+            core = re.sub(r"[\W_]", "", real)
             pattern = _SEP.join(re.escape(c) for c in core)
         else:
             pattern = re.escape(real)
@@ -746,12 +996,32 @@ def _mask_patterns(mask: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
     return out
 
 
-def _mask(value: Any, mask: dict[str, str]) -> Any:
+def _mask(value: Any, mask: dict[str, str], secrets_out: Any = ()) -> Any:
     """Replace real values with what the agent saw, anywhere in a sink's result: in text, in keys, as
-    numbers, in any case, and reformatted (a card "4111 1111 1111 1111" also as 4111-1111-1111-1111)."""
+    numbers, in any case, and reformatted (a card "4111 1111 1111 1111" also as 4111-1111-1111-1111).
+    Secrets (`secrets_out`) are also caught written in base64 or hex."""
     if not mask:
         return value
+    mask = dict(mask)
+    for real in secrets_out:
+        if real in mask:
+            for enc in _encodings(real):
+                mask.setdefault(enc, mask[real])
     return _mask_value(value, _mask_patterns(mask))
+
+
+def _encodings(real: str) -> set[str]:
+    """base64 (standard and URL-safe, with or without padding) and hex of a secret, as written and with
+    spaces and punctuation removed."""
+    out = set()
+    for form in {real, re.sub(r"[\W_]", "", real)}:
+        raw = form.encode("utf-8")
+        if len(raw) < 4:
+            continue
+        for b in (base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode()):
+            out |= {b, b.rstrip("=")}
+        out.add(raw.hex())
+    return {e for e in out if len(e) >= 8}
 
 
 def _mask_value(value: Any, patterns: list[tuple[re.Pattern[str], str]]) -> Any:
@@ -775,19 +1045,85 @@ def _mask_value(value: Any, patterns: list[tuple[re.Pattern[str], str]]) -> Any:
 def _canonical(v: Any) -> Any:
     """What the sink receives after the checks: the bare email address (lower-case), or a plain
     identifier with its original letters (channel ids and account numbers can be case-sensitive)."""
-    n = _norm(v)
+    n = _norm(v, unicode_ok=True)
     return n if "@" in n else (v.strip() if isinstance(v, str) else v)
 
 
 def _norm_pattern(spec: str) -> str:
-    """Allowed-recipient patterns from the policy (trusted): just trimmed and lower-cased."""
-    return spec.strip().lower()
+    """Allowed-recipient patterns from the policy (trusted): trimmed; email patterns and a URL's scheme and
+    host lower-cased, the rest kept as written."""
+    s = spec.strip()
+    if "@" in s:
+        return s.lower()
+    m = re.match(r"([a-z*][a-z0-9+.\-*]*://[^/?#]*)(.*)", s, re.I | re.S)
+    return m.group(1).lower() + m.group(2) if m else s
+
+
+_GLOB_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _glob(pattern: str) -> re.Pattern[str]:
+    """A recipient pattern as a regex. Wildcards stay inside one part of an address, so a pattern is never
+    wider than it looks:
+      email      '*' in the name part matches any name ('*@acme.example'); in the domain it matches one label
+                 without dots ('*@*.acme.example' is one subdomain deep)
+      URL        '*' in the host matches one label; in the path it matches within one segment (no '/');
+                 '**' in the path matches across segments ('https://files.acme.example/upload/**')
+      other ids  '*' matches anything except '/', '@' and '.'
+    '?' is one such character; [abc] is a character class."""
+    rx = _GLOB_CACHE.get(pattern)
+    if rx is not None:
+        return rx
+    if "@" in pattern:
+        local, _, domain = pattern.rpartition("@")
+        parts = [(local, "[^@]"), ("@", None), (domain, "[^@./]")]
+    elif m := re.match(r"([^:/]*://)([^/?#]*)(.*)", pattern, re.S):
+        parts = [(m.group(1), None), (m.group(2), "[^@./:?#]"), (m.group(3), "[^/?#]")]
+    else:
+        parts = [(pattern, "[^/@.]")]
+    out = []
+    for text, cls in parts:
+        if cls is None:
+            out.append(re.escape(text))
+            continue
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == "*" and text[i:i + 2] == "**" and cls == "[^/?#]":
+                out.append(".*")
+                i += 2
+                continue
+            if c == "*":
+                out.append(cls + "*")
+            elif c == "?":
+                out.append(cls)
+            elif c == "[" and (j := text.find("]", i + 2)) != -1:
+                inner = text[i + 1:j]
+                negate = inner.startswith("!")
+                inner = re.sub(r"([\\\[\]^&|~])", r"\\\1", inner[1:] if negate else inner).replace("--", "-\\-")
+                # like '*' and '?', a class never matches the part's separators
+                out.append(f"(?:(?!{cls[2:-1] and '[' + cls[2:-1] + ']'}){'[^' if negate else '['}{inner}])")
+                i = j + 1
+                continue
+            else:
+                out.append(re.escape(c))
+            i += 1
+    try:
+        rx = re.compile("".join(out), re.S)
+    except re.error:                          # e.g. a malformed [z-a] class in the policy: matches nothing
+        rx = re.compile(r"(?!)")
+    if len(_GLOB_CACHE) < 4096:
+        _GLOB_CACHE[pattern] = rx
+    return rx
 
 
 def _matches(recipient: Any, allowed: list[str]) -> bool:
-    r = _norm(recipient)
-    return bool(r) and r != _INVALID and any(r == a or (any(c in a for c in "*?[") and fnmatch.fnmatchcase(r, a))
-                           for a in allowed)
+    r = _norm(recipient, unicode_ok=True)
+    if not r or r == _INVALID:
+        return False
+    if not r.isascii():                      # an internationalised address: only an exact trusted match
+        return r in allowed
+    return any(r == a or (any(c in a for c in "*?[") and _glob(a).fullmatch(r) is not None) for a in allowed)
 
 
 def _as_list(v: Any) -> list:

@@ -149,6 +149,12 @@ class Planner:
         rule = self.task.template.sinks.get(sink)
         recipient_arg = rule.recipient_arg if rule else None
 
+        with self.task._lock:                    # the same task may be used by other threads meanwhile
+            self._provenance_checks(sink, rule, recipient_arg, args)
+        # Then the ordinary checks (trusted recipients, value matching, approvals) and execution.
+        return self.task.act(sink, **{k: v.value for k, v in args.items()})
+
+    def _provenance_checks(self, sink: str, rule: Any, recipient_arg: str | None, args: dict[str, Labeled]) -> None:
         reasons = []
         recipients: list[Any] = []
         if recipient_arg and recipient_arg in args:
@@ -169,8 +175,6 @@ class Planner:
                             reasons.append((safe, safe.replace(" to a", f" (owner {label.owner}) to a")))
         for reason, shown in dict.fromkeys(reasons):
             self.task._decide("act", "provenance: " + reason, shown=shown and "provenance: " + shown, sink=sink)
-        # Then the ordinary checks (trusted recipients, value matching, approvals) and execution.
-        return self.task.act(sink, **{k: v.value for k, v in args.items()})
 
     # --------------------------------------------------------------- helpers
     def _resolve(self, ref: Any) -> Labeled:

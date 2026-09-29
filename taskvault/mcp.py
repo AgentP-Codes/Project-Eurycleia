@@ -73,7 +73,12 @@ class StdioMCPClient:
                 line = self.proc.stdout.readline()
                 if not line:
                     raise MCPError("upstream MCP server exited")
-                msg = json.loads(line)
+                try:
+                    msg = json.loads(line)
+                except (ValueError, RecursionError):
+                    raise MCPError("upstream MCP server sent a message that isn't valid JSON") from None
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("id") == rid and ("result" in msg or "error" in msg):
                     if "error" in msg:
                         raise MCPError(msg["error"].get("message", "upstream error"))
@@ -102,7 +107,7 @@ def _tool_result_to_value(result: dict[str, Any]) -> Any:
     text = _text(result)
     try:
         return json.loads(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return text
 
 
@@ -215,7 +220,7 @@ class ProxyServer:
                 continue
             try:
                 msg = json.loads(line)
-            except (json.JSONDecodeError, RecursionError):
+            except (ValueError, RecursionError):     # ValueError also covers numbers too long to convert
                 reply: dict[str, Any] | None = _error(None, -32700, "parse error")
             else:
                 reply = self.handle(msg)

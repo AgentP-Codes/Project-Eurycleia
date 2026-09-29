@@ -5,6 +5,7 @@ A policy is one YAML file, kept in your repo and reviewed like code. `taskvault 
 ```yaml
 version: 1
 internal_domains: [yourcompany.com]
+link_domains: []    # optional: other websites whose links may carry customer data
 cache_ttl_seconds: 300
 detect_outbound: true
 sources:  {...}
@@ -16,6 +17,12 @@ upstream: {...}     # optional: for the MCP proxy
 ## `internal_domains`
 
 Your company's own email domains. Protected data (company-owned or a customer's) may be sent to these addresses, because the company already holds it. Secrets still only go where `secrets_allowed` says.
+
+## `link_domains`
+
+Customer data inside a link leaves the company as soon as the link is opened, or as soon as an image in an email loads, whoever the message was sent to. So in any action, a link to a website outside `internal_domains` may not carry a protected or secret value the task has seen, a placeholder, or a stand-in. Links are found in HTML attributes, Markdown, CSS and plain text, and are checked as written and decoded (percent-encoding, `+` for spaces, HTML entities). The action is blocked, not edited.
+
+List other sites here only if links to them may carry customer data, for example your booking provider: `link_domains: [bookings.example]`. Each entry also covers its subdomains. Links that carry no customer data (a help article, say) always work.
 
 ## `cache_ttl_seconds`
 
@@ -82,7 +89,7 @@ tasks:
 | `reads.<source>.key` / `keys` | Which record(s) the task may read. `{name}` is filled from trusted inputs |
 | `reads.<source>.fields` | Which fields are returned. Omit to return all (linter warns) |
 | `sinks.<sink>.recipient_arg` | Argument naming the recipient(s). Lists and comma-separated strings are each checked. Each must be exactly one plain address (`a@b.com` or `Name <a@b.com>`) or one plain id; anything else is blocked. Arguments named `cc`, `bcc`, `reply_to` or `recipients` get the same checks. The sink receives the checked address |
-| `sinks.<sink>.allowed_recipients` | `source:key.field` (looked up by the vault), a literal address, or a glob like `*@yourcompany.com` |
+| `sinks.<sink>.allowed_recipients` | `source:key.field` (looked up by the vault), a literal address, or a pattern like `*@yourcompany.com` (see [Recipient patterns](#recipient-patterns)) |
 | `sinks.<sink>.secrets_allowed` | Secret fields whose placeholders are swapped for real values at this sink. As a mapping (`{card_number: card}`), each secret may only be passed as that one argument |
 | `sinks.<sink>.args` | The only argument names this sink accepts. Recommended for every sink with a recipient (the linter warns otherwise) |
 | `sinks.<sink>.risk` | `low` (default): allow. `medium`: allow, but flag for review (`on_flag` callback, `taskvault review`). `high`: a human must approve |
@@ -91,6 +98,20 @@ tasks:
 | `sinks.<sink>.invalidates` | Sources to drop from the cache after this action |
 
 Any source or sink not listed in the task is blocked.
+
+### Recipient patterns
+
+A `*` never reaches past one part of an address, so a pattern is never wider than it looks:
+
+| Pattern | Matches | Doesn't match |
+| --- | --- | --- |
+| `*@acme.example` | any name at `acme.example` | `x@evil.acme.example`, `x@notacme.example` |
+| `*@*.acme.example` | one subdomain: `x@eu.acme.example` | `x@a.b.acme.example`, `x@acme.example` |
+| `https://*.partner.com/*` | `https://api.partner.com/in` (one path segment) | `https://evil.com/x.partner.com/y`, `https://api.partner.com/a/b` |
+| `https://files.acme.example/upload/**` | anything under `/upload/` | other paths or hosts |
+| `+614*` | ids starting `+614` (anything except `/`, `@`, `.`) | |
+
+`?` is one character and `[abc]` a character class, within the same part. Email addresses are compared ignoring case; for other recipients only a URL's scheme and host ignore case, and the rest must match exactly (a URL path can be case-sensitive). An address with non-ASCII letters (`josé@example.com`) is accepted only when it exactly equals one from trusted data, never through a pattern. `taskvault check` warns about patterns like `*acme.example` or `*@*acme.example` that match look-alike domains.
 
 List settings (`allowed_recipients`, `args`, `fields`, `trusted`...) must be written as lists, e.g. `[a, b]`. A plain string is rejected, so a typo can't turn `"*@acme.example"` into "anyone".
 

@@ -9,7 +9,7 @@ Adapters:  taskvault.connectors, taskvault.mcp (proxy), taskvault.llm (models)
 Tooling:   taskvault.attacks (attack suite), `taskvault` CLI
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .audit import AuditLog  # noqa: E402
 from .policy import Policy, PolicyError  # noqa: E402

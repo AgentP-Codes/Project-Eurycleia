@@ -15,6 +15,7 @@ trust the vault's own verdicts. Use it in CI: `taskvault test`.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,30 @@ def run_attack_suite(policy: Policy, fx: Fixtures, tasks: list[str] | None = Non
     return report
 
 
+def _loose_pattern(spec: str) -> str | None:
+    """Why a wildcard recipient pattern is wider than it may look, or None."""
+    s = spec.strip()
+    if not any(c in s for c in "*?[") or s in ("*", "*@*"):
+        return None
+    if "://" not in s and re.fullmatch(r"[\w.]+:[^./]+\.\w+", s):
+        return None                                   # a source:key.field reference
+    if "@" in s:
+        host = s.rpartition("@")[2]
+    elif m := re.match(r"[^:/]*://([^/?#]*)", s):
+        host = m.group(1)
+    elif "." in s:
+        return ("has a wildcard and a domain but no '@' or '://': it matches other identifiers, not an email "
+                "domain (did you mean '*@domain'?)")
+    else:
+        return None                                   # a plain id pattern such as '+614*
+    labels = host.split(".")
+    if any(("*" in lab or "?" in lab or "[" in lab) and lab != "*" for lab in labels):
+        return "has a wildcard inside a domain name, so look-alike domains match too; use a whole label ('*.' )"
+    if len([lab for lab in labels if lab != "*"]) < 2:
+        return "allows any domain"
+    return None
+
+
 def lint(policy: Policy) -> list[str]:
     """Deterministic checks for risky policy choices."""
     w = []
@@ -239,6 +264,9 @@ def lint(policy: Policy) -> list[str]:
                          f"(an unexpected recipient field, say) are blocked")
             if any(r.strip() in ("*", "*@*") for r in rule.allowed_recipients):
                 w.append(f"task {tname}: sink {sink} allows any recipient")
+            for r in rule.allowed_recipients:
+                if (why := _loose_pattern(r)) is not None:
+                    w.append(f"task {tname}: sink {sink} recipient pattern {r!r} {why}")
             if rule.max_calls is None:
                 w.append(f"task {tname}: sink {sink} has no max_calls")
     for sname, s in policy.sources.items():

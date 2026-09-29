@@ -11,6 +11,7 @@ A policy is plain YAML, kept in the developer's repo and reviewed like code:
   tools     how agent-facing tool names map to vault reads and actions
             (used by the MCP proxy and the LLM adapters)
   internal_domains   where company-owned protected data may be sent
+  link_domains       other websites whose links may carry customer data (besides internal_domains)
 
 See docs/policy-reference.md for every option.
 """
@@ -99,6 +100,7 @@ class Policy:
     tasks: dict[str, TaskTemplate]
     tools: dict[str, ToolMap] = field(default_factory=dict)
     internal_domains: list[str] = field(default_factory=list)
+    link_domains: list[str] = field(default_factory=list)   # other sites that may carry customer data in links
     cache_ttl_seconds: float = 300
     detect_outbound: bool = False       # also block outbound values that look like secrets (cards, TFNs, keys)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -128,8 +130,9 @@ class Policy:
         for section in ("sources", "tasks", "tools", "upstream"):
             _mapping(raw.get(section), section, entries=section != "upstream")
         _str_list(raw.get("internal_domains"), "internal_domains")
-        known = {"sources", "tasks", "tools", "internal_domains", "cache_ttl_seconds", "version", "upstream",
-                 "detect_outbound"}
+        _str_list(raw.get("link_domains"), "link_domains")
+        known = {"sources", "tasks", "tools", "internal_domains", "link_domains", "cache_ttl_seconds", "version",
+                 "upstream", "detect_outbound"}
         if extra := set(raw) - known:
             raise PolicyError(f"unknown top-level keys: {sorted(extra)}")
 
@@ -263,6 +266,7 @@ class Policy:
 
         return cls(sources=sources, tasks=tasks, tools=tools,
                    internal_domains=[d.lower() for d in raw.get("internal_domains") or []],
+                   link_domains=[d.strip().lower().lstrip("*.") for d in raw.get("link_domains") or []],
                    cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 300)),
                    detect_outbound=bool(raw.get("detect_outbound", False)), raw=raw)
 

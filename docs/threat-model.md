@@ -42,13 +42,14 @@ Assuming the vault and key store aren't compromised and the policy is correct:
 | 4 | Recipients must match `allowed_recipients`, resolved by the vault from trusted data | ✅ | ✅ |
 | 5 | Protected data only reaches its owner or internal domains | ⚠️ value matching: exact values and document lines | ✅ by provenance: survives rewording and encoding |
 | 6 | A recipient derived from untrusted content is rejected, even if it looks valid | ⚠️ only via rule 4 | ✅ |
-| 7 | Sinks reject arguments not in their `args` list and calls beyond `max_calls` | ✅ | ✅ |
+| 7 | Sinks reject arguments not in their `args` list and calls beyond `max_calls`; limits and data budgets also hold when tool calls run in parallel | ✅ | ✅ |
 | 8 | `approval: always` actions need a human yes; with no approver they fail closed | ✅ | ✅ |
 | 9 | Every read, action, block and approval is in a hash-chained audit log with no raw sensitive values | ✅ | ✅ |
 | 10 | Cached records and placeholder values are encrypted with the customer's key, and deposit boxes with the vault key (plus the holder's key for the high tier); destroying the key makes them unreadable | ✅ when a cipher is configured | ✅ |
 | 11 | Fields listed in `pseudonymize` reach the model only as stand-ins; recipients and data checks run on the real values | ✅ | ✅ |
-| 12 | Recipients are compared after normalisation; display-name tricks, header injection, hidden second recipients and look-alike characters are rejected | ✅ | ✅ |
+| 12 | Recipients are compared after normalisation; display-name tricks, header injection, hidden second recipients and look-alike characters are rejected (an address with non-ASCII letters only on an exact match with trusted data) | ✅ | ✅ |
 | 13 | Deposit boxes: a high-tier box can't be opened without both the vault's key and the holder's key; one holder's key can't open another holder's box; every opening is in that box's own tamper-evident log | ✅ | ✅ |
+| 14 | Customer data (protected or secret values the task has seen, placeholders, stand-ins) never leaves inside a link to a website outside `internal_domains` / `link_domains`, even in a message to the right person | ⚠️ value matching: exact and decoded values | ⚠️ same check (value matching) |
 
 ## Detection (helpful, never relied on)
 
@@ -58,14 +59,16 @@ These add oversight but aren't enforced protections: `detect_outbound` pattern m
 
 - **Content of allowed actions.** A fooled agent can still send the *right* customer a wrong, rude or misleading message. Review outbound content separately if that matters.
 - **Tool mode, rule 5.** An agent that paraphrases, splits or encodes protected data can get it past value matching *to a recipient the task already allows*. Untrusted recipients are still blocked outright. Use planner mode where this matters.
+- **Rule 14 is value matching too.** Links are checked for whole values (as written, decoded, or with spaces and punctuation dropped) and for two or more words of a multi-word value. One word on its own (a first name in a plain-text link, say) isn't caught, because ordinary links contain common words. Neither is data the agent has reworded or encoded in other ways.
 - **Planner-mode conditions.** A `when:` condition derived from untrusted text lets that text decide *whether* a pre-approved action happens (one bit), not what it does. Conditions are logged.
 - **Pseudonyms are consistent.** The same person gets the same stand-in across tasks, so a model (or its provider) can link activity to one pseudonymous person without learning who they are. Use a separate key per tenant to keep tenants unlinkable.
 - **Deposit boxes while open.** Once a holder allows an opening, their key stays in the vault's memory for `open_ttl` seconds (default 300) so a task can finish. Keep it short, and call `close_all()` when a task ends.
 - **Box metadata.** Box ids, tiers, item counts and timings are visible to anyone with database access; holder names, field names and values are encrypted.
 - **Side channels.** Timing, error messages and whether an action happened can leak small amounts of information.
 - **Sinks without a recipient.** For sinks like webhooks the vault can't know who receives the data. `taskvault check` warns about these; restrict them with `args` and don't send protected data to them.
+- **Sinks that echo secrets in unusual ways.** Sink results are masked for real values in any case and spacing, as base64 and hex, and a second pass removes anything card- or account-shaped. A sink that returns a secret split across several fields, or otherwise transformed, can still get it to the model. Don't return secrets from sinks.
 - **A compromised host, policy, vault or key.** Out of scope.
-- **Availability.** A hostile ticket can make an agent do nothing useful.
+- **Availability.** A hostile ticket can make an agent do nothing useful. Scanning text takes time in proportion to its length (about a second per few hundred KB in the worst case), and the local API limits requests to 1 MB.
 
 ## Failure behaviour
 
