@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Tamper-evident, hash-chained audit log.
 
 Each entry stores the SHA-256 of the previous entry, so editing, reordering or
@@ -47,21 +49,27 @@ def private_file(path: str | Path) -> Path:
 
 
 class AuditLog:
-    def __init__(self, path: str | Path | None = None, fsync: bool = False):
+    """Hash-chained, append-only log.
+
+    With a file, the file is the record and `entries` holds only the most recent `keep` entries (10,000 by
+    default), so a long-running server doesn't grow without end; pass `keep=None` to load everything
+    (e.g. to read or report on a whole log). Without a file, everything stays in memory.
+    """
+
+    def __init__(self, path: str | Path | None = None, fsync: bool = False, keep: int | None = 10_000):
         self.path = private_file(Path(path).resolve()) if path else None   # absolute: survives chdir
         self.fsync = fsync
+        self.keep = keep if self.path else None
         self._lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
         if self.path:
-            for n, line in enumerate(self.path.read_text().splitlines(), 1):
-                if not line.strip():
-                    continue
-                try:
-                    self.entries.append(json.loads(line))
-                except json.JSONDecodeError as e:
-                    hint = (" If the machine crashed while writing, run `taskvault audit repair` to set the "
-                            "unfinished last line aside." if n == len(self.path.read_text().splitlines()) else "")
-                    raise AuditError(f"{self.path}:{n} is not valid JSON; the log may be damaged.{hint}") from e
+            for _, entry in _read_entries(self.path):
+                self.entries.append(entry)
+                self._trim()
+
+    def _trim(self) -> None:
+        if self.keep is not None and len(self.entries) > self.keep + self.keep // 10:
+            del self.entries[:len(self.entries) - self.keep]
 
     @property
     def head(self) -> str:
@@ -86,17 +94,17 @@ class AuditLog:
                 if self.fsync:
                     os.fsync(f.fileno())
             self.entries.append(entry)
+            self._trim()
             return entry
 
     def verify(self) -> bool:
-        """True if the whole chain is intact. With several writers, verify a freshly loaded log
-        (`AuditLog(path).verify()`): this object only holds the entries it wrote itself."""
+        """True if the whole chain is intact (for a file: the whole file, whoever wrote to it)."""
         return self.first_bad_entry() is None
 
     def first_bad_entry(self) -> int | None:
         """Index of the first entry that breaks the chain, or None if it's intact."""
-        # With a file, check the file itself: other processes may have added entries between ours.
-        entries = AuditLog(self.path).entries if self.path else self.entries
+        # With a file, check the file itself, one line at a time: other processes may have added entries.
+        entries = (e for _, e in _read_entries(self.path)) if self.path else iter(self.entries)
         prev = GENESIS
         for i, entry in enumerate(entries):
             body = {k: v for k, v in entry.items() if k != "hash"}
@@ -154,19 +162,62 @@ def _last_line(f) -> dict[str, Any] | None:
     return None
 
 
+def _read_entries(path: Path):
+    """Every entry in an audit file, streamed line by line under the file lock (never a half-written line,
+    and never the whole file in memory at once)."""
+    with path.open("a+b") as f, _file_lock(f):
+        f.seek(0)
+        n, pending = 0, None
+        for raw in f:
+            n += 1
+            if pending is not None:
+                yield _parse(path, *pending, last=False)
+                pending = None
+            if raw.strip():
+                pending = (n, raw)
+        if pending is not None:
+            yield _parse(path, *pending, last=True)
+
+
+def _parse(path: Path, n: int, raw: bytes, last: bool) -> tuple[int, dict[str, Any]]:
+    try:
+        return n, json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        hint = (" If the machine crashed while writing, run `taskvault audit repair` to set the "
+                "unfinished last line aside." if last else "")
+        raise AuditError(f"{path}:{n} is not valid JSON; the log may be damaged.{hint}") from e
+
+
+_WINDOWS = os.name == "nt"
+
+
+def _msvcrt():  # pragma: no cover - Windows only (tests substitute a stand-in)
+    import msvcrt
+    return msvcrt
+
+
+def _rewind(f) -> None:
+    """Put the OS file position at 0. `f.seek(0)` alone isn't enough: when position 0 is still in its read
+    buffer, Python skips the real seek, and Windows locks and unlocks at the OS position."""
+    if f.writable():
+        f.flush()
+    f.seek(0)
+    os.lseek(f.fileno(), 0, os.SEEK_SET)
+
+
 class _file_lock:
-    """Exclusive OS-level lock on an open file, across processes (POSIX flock / Windows locking)."""
+    """Exclusive OS-level lock on an open file, across processes (POSIX flock / Windows byte-range locking)."""
 
     def __init__(self, f):
         self.f = f
 
     def __enter__(self):
-        if os.name == "nt":  # pragma: no cover - exercised on Windows only
-            import msvcrt
-            self.f.seek(0)
+        if _WINDOWS:
+            ms = _msvcrt()
+            _rewind(self.f)
             while True:
                 try:
-                    msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
+                    ms.locking(self.f.fileno(), ms.LK_LOCK, 1)
                     break
                 except OSError:
                     time.sleep(0.05)
@@ -175,12 +226,18 @@ class _file_lock:
             fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
         return self
 
-    def __exit__(self, *exc):
-        if os.name == "nt":  # pragma: no cover
-            import msvcrt
-            self.f.seek(0)
-            msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if _WINDOWS:
+                ms = _msvcrt()
+                _rewind(self.f)                 # unlock exactly the byte we locked
+                ms.locking(self.f.fileno(), ms.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            if exc_type is None:
+                raise
+            # an error is already on its way (e.g. a damaged log): report that one, not the unlock;
+            # closing the file releases the lock anyway
         return False

@@ -1,8 +1,10 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Attempts to get around the vault. Every one of these must be blocked."""
 
 import pytest
 
-from demo.__main__ import make_vault
+from demo.__main__ import POLICY, make_vault
 from demo.world import World
 from taskvault import Blocked, Policy, Vault
 
@@ -61,7 +63,7 @@ def test_forged_and_foreign_placeholders_are_blocked(world):
 
 
 def test_secret_placeholder_as_recipient_or_nested_is_blocked(world):
-    raw = Policy.load("demo/policy.yaml").raw
+    raw = Policy.load(POLICY).raw
     raw["tasks"]["support_reply"]["sinks"]["payments.refund"]["secrets_allowed"] = {"card_number": "card"}
     base = make_vault(world)
     task = Vault(Policy.from_dict(raw), base.sources, base.sinks).start_task("support_reply", customer_id=12)
@@ -96,7 +98,7 @@ def test_protected_values_hidden_in_structures_or_case(task, world):
 
 
 def test_customer_data_may_go_to_internal_staff_but_not_secrets(world):
-    raw = Policy.load("demo/policy.yaml").raw
+    raw = Policy.load(POLICY).raw
     raw["tasks"]["support_reply"]["sinks"]["email.send"]["allowed_recipients"].append("*@acme.example")
     vault = Vault(Policy.from_dict(raw), make_vault(world).sources, make_vault(world).sinks)
     t = vault.start_task("support_reply", customer_id=12)

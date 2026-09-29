@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Encryption with customer-held keys.
 
 Everything the vault stores (cached records, secret values behind placeholders)
@@ -144,5 +146,5 @@ class Cipher:
 
     def fingerprint(self, value: Any) -> str:
         """Keyed fingerprint, so logs can correlate values without being brute-forceable."""
-        mac = hmac.new(self.keys.data_key(), b"fp:" + str(value).encode(), hashlib.sha256)
+        mac = hmac.new(self.keys.data_key(), b"fp:" + str(value).encode("utf-8", "surrogatepass"), hashlib.sha256)
         return mac.hexdigest()[:16]

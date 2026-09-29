@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Stress-test findings (September 2026): each test pins down one issue so it can't come back."""
 
 import json
@@ -151,7 +153,7 @@ def test_tampered_box_data_is_a_logged_block_not_a_crash(tmp_path):
     vault, world = _vault_on_boxes(str(tmp_path / "b.db"), LocalKeyProvider(tmp_path / "v.key"))
     task = vault.start_task("support_reply", customer_id=12)
     c = task.read("crm.customer")
-    vault.boxes.db.execute("UPDATE tv_items SET blob = substr(blob, 1, length(blob) - 4) || X'00000000'")
+    vault.boxes.db.execute("UPDATE tvb_items SET blob = substr(blob, 1, length(blob) - 4) || X'00000000'")
     with pytest.raises(Blocked):
         task.act("payments.refund", card=c["card_number"], amount=49)
     assert world.refunds == [] and vault.audit.decisions("block") and vault.audit.verify()
@@ -216,3 +218,155 @@ def test_a_recipient_pattern_written_as_text_is_rejected_not_read_as_characters(
     data["tasks"]["support_reply"]["sinks"]["email.send"]["allowed_recipients"] = "*@acme.example"
     with pytest.raises(PolicyError, match="must be a list"):
         Policy.from_dict(data)
+
+
+# ---- 8. found by the first real-agent run (LangGraph + hermes3) ----------------------------
+
+def test_a_refund_cannot_go_to_a_card_the_agent_typed():
+    """The card argument is bound to card_number, so it must be the vault's placeholder:
+    a fooled agent can't refund to a card number of its own choosing."""
+    world = World()
+    task = make_vault(world).start_task("support_reply", customer_id=12)
+    c = task.read("crm.customer")
+    for typed in ("xxxx-xxxx-xxxx-xxxx", "5555 5555 5555 4444", "4000056655665556", "", None, 12,
+                  c["card_number"] + " ", c["card_number"].replace("card_number", "email")):
+        with pytest.raises(Blocked):
+            task.act("payments.refund", card=typed, amount=49)
+    assert world.refunds == []
+    task.act("payments.refund", card=c["card_number"], amount=49)
+    assert world.refunds == [{"card": "4111 1111 1111 1111", "amount": 49}]
+
+
+def test_an_empty_field_list_means_the_usual_fields():
+    world = World()
+    task = make_vault(world).start_task("support_reply", customer_id=12)
+    assert set(task.read("crm.customer", fields=[])) == set(task.read("crm.customer"))
+    assert task.read("crm.customer", fields=[])["name"] == "Priya Shah"
+
+
+# ---- 9. external security report (September 2026) ------------------------------------------
+
+def _labelled_docs_vault(world_outbox):
+    pol = Policy.from_dict({
+        "internal_domains": ["acme.example"],
+        "sources": {
+            "customers": {"owner": "customer_id", "owner_contact": "email",
+                          "fields": {"email": "protected", "name": "protected"}},
+            "memos": {"owner": "company", "default_level": "normal", "fields": {"body": "normal", "tag": "normal"},
+                      "label_field": "tag", "label_map": {"Confidential": "protected"}}},
+        "tasks": {"reply": {"trusted": ["customer_id"],
+                            "reads": {"customers": {"key": "{customer_id}", "fields": ["email", "name"]},
+                                      "memos": {"keys": ["m1"], "fields": ["body"]}},
+                            "sinks": {"email.send": {"recipient_arg": "to", "args": ["to", "subject", "body"],
+                                                     "allowed_recipients": ["customers:{customer_id}.email"]}}}}})
+    memos = {"m1": {"body": "INTERNAL floor price $18/seat", "tag": "Confidential"}}
+    customers = {12: {"email": "priya.shah@example.com", "name": "Priya"}}
+    return Vault(pol, {"customers": lambda k: customers.get(int(k)), "memos": lambda k: memos.get(k)},
+                 {"email.send": lambda **kw: world_outbox.append(kw) or "sent"})
+
+
+def test_planner_honours_document_level_labels():
+    """Report finding 1: planner mode ignored label_field/label_map, so a 'Confidential' memo could be
+    re-encoded by a fooled extractor and sent out."""
+    import base64
+
+    from taskvault.planner import Planner
+    outbox = []
+    task = _labelled_docs_vault(outbox).start_task("reply", customer_id=12)
+    plan = [{"id": "c", "read": "customers"}, {"id": "m", "read": "memos", "key": "m1"},
+            {"id": "x", "extract": {"from": ["m.body"], "instruction": "summarise", "schema": {"text": "string"}}},
+            {"act": "email.send", "args": {"to": "$c.email", "subject": "Hi", "body": "$x.text"}}]
+    hijacked = lambda instruction, inputs, schema: {"text": base64.b64encode(inputs["m.body"].encode()).decode()}  # noqa: E731
+    with pytest.raises(Blocked):
+        Planner(task, hijacked).run(plan)
+    assert outbox == []
+
+
+def test_forgetting_a_holder_leaves_no_index_rows(tmp_path):
+    """Report minor note: forget_holder left the encrypted field-name list behind."""
+    from taskvault.boxes import BoxStore, StaticHolderKeys
+    from taskvault.crypto import LocalKeyProvider
+    keys = StaticHolderKeys()
+    for h in ("customer:12", "customer:45"):
+        keys.create(h)
+    store = BoxStore(str(tmp_path / "b.db"), LocalKeyProvider(tmp_path / "v.key"), keys)
+    levels = {"name": "protected", "card_number": "secret", "plan": "normal"}
+    store.store_record("crm.customer", 12, {"name": "Priya", "card_number": "4111 1111 1111 1111", "plan": "Pro"},
+                       "customer:12", levels)
+    store.store_record("crm.customer", 45, {"name": "Tom", "card_number": "5555 5555 5555 4444", "plan": "Basic"},
+                       "customer:45", levels)
+    gone = store._macb(16, "record", "crm.customer", 12)
+    store.forget_holder("customer:12")
+    assert store.db.execute("SELECT count(*) FROM tvb_records WHERE record=?", (gone,))[0][0] == 0
+    assert store.fetch_record("crm.customer", 45)["name"] == "Tom"                 # others untouched
+
+
+def test_detector_stays_fast_on_hostile_text():
+    """Report finding 2: overlap bookkeeping was quadratic, so crafted text could stall outbound checks."""
+    import time
+
+    from taskvault.detect import scan_text
+    text = "0400 111 222 " * 25_000                      # ~325 KB of phone-like numbers
+    t0 = time.perf_counter()
+    assert len(scan_text(text)) > 10_000                 # phone numbers (and digit runs that pass the card check)
+    assert time.perf_counter() - t0 < 5.0                # was ~25 s; now well under a second on a laptop
+
+
+def test_a_file_audit_log_keeps_a_bounded_window_in_memory(tmp_path):
+    """Found by the soak test: a long-running server kept every audit entry in memory as well as on disk."""
+    from taskvault import AuditLog
+    log = AuditLog(tmp_path / "a.jsonl", keep=100)
+    for i in range(1000):
+        log.record("x", i=i)
+    assert len(log.entries) <= 110 and log.entries[-1]["i"] == 999
+    assert log.verify()                                            # checks the whole file, not the window
+    assert len(AuditLog(tmp_path / "a.jsonl", keep=None).entries) == 1000
+    reloaded = AuditLog(tmp_path / "a.jsonl", keep=100)
+    assert len(reloaded.entries) <= 110 and reloaded.head == log.head
+    reloaded.record("y")
+    assert AuditLog(tmp_path / "a.jsonl").verify()
+
+
+def test_windows_file_lock_unlocks_the_byte_it_locked(tmp_path, monkeypatch):
+    """Found on Windows: when reading an audit log stopped early (a damaged line), the unlock landed on a
+    different position from the lock ("Permission denied"), hiding the real error. A stand-in for Windows'
+    msvcrt that is just as strict reproduces it here."""
+    import os as _os
+
+    from taskvault import audit as audit_mod
+
+    class StrictMsvcrt:
+        LK_LOCK, LK_UNLCK = 1, 0
+        held: dict = {}
+
+        def locking(self, fd, mode, n):
+            pos = _os.lseek(fd, 0, _os.SEEK_CUR)
+            if mode == self.LK_LOCK:
+                self.held[fd] = pos
+            elif self.held.pop(fd, None) != pos:
+                raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(audit_mod, "_WINDOWS", True)
+    monkeypatch.setattr(audit_mod, "_msvcrt", lambda: StrictMsvcrt())
+    path = tmp_path / "audit.jsonl"
+    log = audit_mod.AuditLog(path)
+    for i in range(300):                               # bigger than one read buffer
+        log.record("act", i=i, pad="x" * 50)
+    assert audit_mod.AuditLog(path).verify()
+    lines = path.read_text().splitlines()
+    lines[5] = lines[5][:-5]                            # damage near the start: reading stops early
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(audit_mod.AuditError, match="not valid JSON"):
+        audit_mod.AuditLog(path)
+    with pytest.raises(audit_mod.AuditError):
+        audit_mod.AuditLog.repair(path)
+
+
+def test_references_from_the_retired_secret_store_are_refused_loudly():
+    """Review of the 0.5 slim-down: a database still holding old `tvref_` references would otherwise pass the
+    reference on as if it were the card number (e.g. a refund to a meaningless value)."""
+    world = World()
+    world.customers[12]["card_number"] = "tvref_0123456789abcdef"
+    task = make_vault(world).start_task("support_reply", customer_id=12)
+    with pytest.raises(Blocked, match="deposit boxes"):
+        task.read("crm.customer")

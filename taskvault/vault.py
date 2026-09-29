@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """The vault: task-scoped reads, placeholders for secrets, owner-bound outbound checks.
 
 The agent never talks to source systems. It asks the vault for data inside a
@@ -43,9 +45,10 @@ from .audit import AuditLog
 from .boxes import BoxLocked, is_box_ref
 from .cache import EncryptedCache
 from .crypto import Cipher
+from .derive import compute as derive_value
+from .detect import redact_secrets
 from .errors import TaskvaultError
 from .policy import Policy, SinkRule, TaskTemplate
-from .store import SecretStore, is_ref
 
 log = logging.getLogger("taskvault")
 
@@ -106,22 +109,21 @@ class Vault:
                  cipher: Cipher | None = None,
                  cache: EncryptedCache | None = None,
                  approver: Approver | None = None,
-                 recorder: Any = None,
-                 store: SecretStore | None = None,
                  boxes: Any = None,
-                 baseline: Any = None,
-                 on_flag: Callable[[FlagEvent], None] | None = None):
+                 on_flag: Callable[[FlagEvent], None] | None = None,
+                 model: str = "external"):
         if mode not in ("enforce", "shadow"):
             raise ValueError("mode must be 'enforce' or 'shadow'")
+        if model not in ("external", "internal"):
+            raise ValueError("model must be 'external' (a hosted AI service) or 'internal' (self-hosted)")
+        self.model = model
         for name in policy.sources:
             if name not in sources:
                 raise ValueError(f"policy source {name!r} has no connector")
         self.policy, self.sources, self.sinks = policy, sources, sinks
         self.audit = audit if audit is not None else AuditLog()
         self.mode, self.cipher, self.cache = mode, cipher, cache
-        self.approver, self.recorder = approver, recorder
-        self.store, self.baseline, self.on_flag = store, baseline, on_flag
-        self.boxes = boxes
+        self.approver, self.on_flag, self.boxes = approver, on_flag, boxes
         self._fp_key = os.urandom(32)
         self._task_ids = itertools.count(1)
 
@@ -130,7 +132,7 @@ class Vault:
         """Keyed fingerprint so logs can correlate values without storing them."""
         if self.cipher:
             return self.cipher.fingerprint(value)
-        return hmac.new(self._fp_key, str(value).encode(), hashlib.sha256).hexdigest()[:16]
+        return hmac.new(self._fp_key, str(value).encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:16]
 
     def pseudonym(self, value: Any, source: str, field: str) -> str:
         """A stable, readable stand-in for a real value. Same input -> same pseudonym."""
@@ -150,8 +152,6 @@ class Vault:
         task = Task(self, t, next(self._task_ids), trusted)
         self.audit.record("task.start", task=task.id, template=template,
                           trusted={k: self.fp(v) for k, v in trusted.items()})
-        if self.recorder:
-            self.recorder.task_started(template, trusted)
         return task
 
     def _fetch(self, source: str, key: Any) -> dict | None:
@@ -161,8 +161,6 @@ class Vault:
             if hit is not None:
                 return hit
         record = self.sources[source](key)
-        if self.recorder:
-            self.recorder.source_read(source, key, record)
         if record is not None and self.cache is not None:
             self.cache.put(source, key, record)
         return record
@@ -188,10 +186,14 @@ class Task:
         self._calls: dict[str, int] = {}
         self._reported: set[str] = set()
         self._pseudo: dict[str, Any] = {}                   # pseudonym -> real value
+        self._revealed: dict[str, Any] = {}                 # placeholder -> value opened from a deposit box
+        self._used = {"reads": 0, "records": set(), "fields": set()}   # for the task's data budget
 
     # ------------------------------------------------------------------ reads
-    def read(self, source: str, key: Any = None) -> dict[str, Any]:
-        """Return one record, filtered to allowed fields, with secrets as placeholders."""
+    def read(self, source: str, key: Any = None, fields: list[str] | None = None) -> dict[str, Any]:
+        """Return one record for the model: only allowed fields (or just the ones asked for),
+        secrets as placeholders, personal details as stand-ins, free text scrubbed, plus any
+        safe summaries the policy defines."""
         self._reported = set()
         if source not in self.vault.policy.sources:
             self._decide("read", "unknown source", shown=f"unknown source {source!r}",
@@ -206,34 +208,112 @@ class Task:
                          shown=f"{source}:{key} is outside this task's scope",
                          source=source, key=self.vault.fp(key))
             rule = {"fields": None}   # shadow mode only: observe what an unscoped read returns
+        derive = rule.get("derive") or {}
         record = self.vault._fetch(source, key)
         if record is None:
             raise KeyError(f"{source}:{key} not found")
         src = self.vault.policy.sources[source]
+        allowed = list(rule.get("fields") or [f for f in record if f not in derive])
+
+        # Fields on request: the model names what it needs; nothing else is returned.
+        if isinstance(fields, (list, tuple)) and not fields:
+            fields = None                    # an empty list means "no preference", not "nothing"
+        if fields is None and rule.get("on_request"):
+            self.vault.audit.record("read", task=self.id, source=source, key=self.vault.fp(key), fields=[],
+                                    decision="allow", note="listed available fields")
+            return {"available_fields": sorted([*allowed, *derive]),
+                    "note": "ask again with fields=[...] for just the ones you need"}
+        if fields is not None:
+            if not isinstance(fields, (list, tuple)) or not all(isinstance(f, str) for f in fields):
+                self._decide("read", "fields must be a list of names", source=source)
+                fields = []
+            unknown = sorted(set(fields) - set(allowed) - set(derive))
+            if unknown:
+                self._decide("read", f"asked for {len(unknown)} field(s) this task can't see",
+                             shown=f"this task can't see {unknown} in {source}", source=source)
+            wanted = [f for f in dict.fromkeys(fields) if f in allowed or f in derive]
+        else:
+            wanted = [*allowed, *derive]
+
+        self._spend(source, key, wanted)
         owner = owner_of(src, key, record)
-        fields = rule.get("fields") or list(record)
+        internal = self.vault.model == "internal"
         out: dict[str, Any] = {}
-        for f in fields:
+        for f in wanted:
+            if f in derive:                                    # a safe summary, never the value itself
+                out[f] = derive_value(derive[f], record)
+                continue
             if f not in record:
                 continue
             label = Label(src.level(key, f, record), owner, source, f, src.trust)
             value = record[f]
+            if isinstance(value, str) and value.startswith("tvref_"):
+                # a reference from the secret store retired in 0.5: never pass it on as if it were the value
+                self._decide("read", "record holds a reference from the retired secret store",
+                             shown=f"{source}.{f} holds an old taskvault secret-store reference; move the "
+                                   "secrets into deposit boxes (taskvault boxes put)", source=source)
+                continue
             if label.level == "secret" or is_box_ref(value):
                 # high-tier box items stay locked: only a reference is sealed, opened at the sink
-                if is_ref(value) and self.vault.store is not None:
-                    value = self.vault.store.get(value)       # long-term secret kept in the vault
                 out[f] = self._seal(value, label)
-            else:
-                if label.level == "protected":
-                    self._remember(value, label)
-                if f in src.pseudonymize and value not in (None, ""):
-                    p = self.vault.pseudonym(value, source, f)
-                    self._pseudo[p] = value
-                    value = p
-                out[f] = value
+                continue
+            if label.level == "protected":
+                self._remember(value, label)
+            as_is = internal and f in src.internal_may_see
+            if f in src.pseudonymize and value not in (None, "") and not as_is:
+                p = self.vault.pseudonym(value, source, f)
+                self._pseudo[p] = value
+                value = p
+            elif isinstance(value, str) and ("*" in src.scrub or f in src.scrub):
+                value = self._scrub(value, label, record, src, keep_personal=as_is)
+            out[f] = value
         self.vault.audit.record("read", task=self.id, source=source, key=self.vault.fp(key),
                                 fields=sorted(out), decision="allow")
         return out
+
+    def _spend(self, source: str, key: Any, fields: list[str]) -> None:
+        """Count this read against the task's data budget (reads, distinct records, distinct fields)."""
+        budget = self.template.budget
+        used = self._used
+        rec = (source, self.vault.fp(key))
+        new_fields = {(rec, f) for f in fields}
+        after = {"reads": used["reads"] + 1, "records": len(used["records"] | {rec}),
+                 "fields": len(used["fields"] | new_fields)}
+        for k, limit in budget.items():
+            if after[k] > limit:
+                self._flag("read", [f"data budget: more than {limit} {k} in one task"])
+                self._decide("read", f"data budget exceeded: at most {limit} {k} per task", source=source)
+        used["reads"] += 1
+        used["records"].add(rec)
+        used["fields"] |= new_fields
+
+    def _scrub(self, text: str, label: Label, record: dict[str, Any], src: Any, keep_personal: bool) -> str:
+        """Free text: secrets found inside become placeholders; emails and phone numbers become
+        stand-ins; this record's own pseudonymised values (e.g. the customer's name) too."""
+        from .detect import KINDS, scan_text
+        out, last = [], 0
+        for kind, s, e in scan_text(text):
+            piece = text[s:e]
+            level = KINDS[kind].level
+            if level == "secret":
+                repl = self._seal(piece, Label("secret", label.owner, label.source, f"text_{kind}", label.trust))
+            elif level == "protected" and kind in ("email", "phone") and not keep_personal:
+                repl = self.vault.pseudonym(piece, label.source, kind)
+                self._pseudo[repl] = piece
+                self._remember(piece, label)
+            else:
+                continue
+            out += [text[last:s], repl]
+            last = e
+        text = "".join(out + [text[last:]])
+        if not keep_personal:
+            for f in src.pseudonymize:
+                v = record.get(f)
+                if isinstance(v, str) and len(v) >= MIN_MATCH_LEN and v in text:
+                    p = self.vault.pseudonym(v, label.source, f)
+                    self._pseudo[p] = v
+                    text = text.replace(v, p)
+        return text
 
     def allowed_keys(self, source: str) -> list[Any]:
         rule = self.template.reads.get(source) or {}
@@ -260,6 +340,7 @@ class Task:
             # second key: the holder's (may ask a person to approve)
             value = self.vault.boxes.reveal(value, task=self.id, reason=f"{self.template.name} -> "
                                                                          f"{getattr(self, '_sink', '?')}")
+            self._revealed[token] = value                   # so this task's sink results can be masked
         return value
 
     def _remember(self, value: Any, label: Label) -> None:
@@ -275,9 +356,12 @@ class Task:
 
     # ---------------------------------------------------------------- actions
     def act(self, sink: str, **args: Any) -> Any:
-        """Check an outbound action, swap placeholders back to real values, then run it."""
+        """Check an outbound action, swap placeholders back to real values, then run it.
+
+        Every check below runs in order; in enforce mode the first failure raises Blocked, in shadow mode
+        each failure is only recorded as "would block"."""
         self._reported = set()
-        shown = args                                        # what the agent sent (for approvals and replay)
+        shown = args                                        # what the agent sent (shown in approvals)
         args = {k: self._unpseudo(v) for k, v in args.items()}   # checks run on real values
         if sink not in self.vault.sinks:
             self._decide("act", "unknown sink", shown=f"unknown sink {sink!r}", sink=self.vault.fp(sink))
@@ -286,17 +370,34 @@ class Task:
         if rule is None:
             self._decide("act", f"sink {sink!r} is not allowed for this task", sink=sink)
             rule = _NO_RULE
+        n = self._check_arguments_and_limits(sink, rule, args)
+        recipient_args, recipients = self._check_recipients(sink, rule, args)
+        text = _flatten(args)
+        self._check_placeholders(sink, rule, args, text, recipients)
+        self._check_raw_values(sink, text, recipients)
+        if self.vault.policy.detect_outbound and recipients:
+            from .detect import KINDS, scan_text
+            for kind, _s, _e in scan_text(TOKEN_RE.sub(" ", text)):
+                if KINDS[kind].level == "secret":
+                    self._decide("act", f"outbound message contains what looks like a {KINDS[kind].label}",
+                                 sink=sink)
+        if rule.approval == "always":
+            self._approve(sink, "policy requires a human to approve this action", shown)
+        return self._run_sink(sink, rule, args, recipient_args, recipients, n)
 
+    def _check_arguments_and_limits(self, sink: str, rule: SinkRule, args: dict[str, Any]) -> int:
         if rule.args is not None and (extra := sorted(set(args) - set(rule.args))):
             self._decide("act", f"{sink!r} does not accept some of the arguments given",
                          shown=f"{sink!r} does not accept arguments {extra}", sink=sink)
-
         n = self._calls.get(sink, 0) + 1
         if rule.max_calls is not None and n > rule.max_calls:
             self._decide("act", f"{sink!r} called more than {rule.max_calls} times in one task", sink=sink)
+        return n
 
+    def _check_recipients(self, sink: str, rule: SinkRule, args: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        """Every recipient (to, cc, bcc, reply_to, ...) must come from trusted data or the policy."""
         recipient_args = [rule.recipient_arg] if rule.recipient_arg else []
-        if rule.recipient_arg:     # cc, bcc, reply_to... get the same checks as the main recipient
+        if rule.recipient_arg:
             recipient_args += [a for a in args if a != rule.recipient_arg and a.lower() in _RECIPIENT_ARGS]
         recipients = [r for a in recipient_args for r in _as_list(args.get(a))]
         if rule.recipient_arg:
@@ -306,14 +407,13 @@ class Task:
                     self._decide("act", "recipient did not come from trusted data",
                                  shown=f"recipient {r!r} did not come from trusted data",
                                  sink=sink, recipient=self.vault.fp(r))
+        return recipient_args, recipients
 
-        text = _flatten(args)
-
-        # Something that looks like a placeholder but isn't a valid one: damaged or forged.
+    def _check_placeholders(self, sink: str, rule: SinkRule, args: dict[str, Any], text: str,
+                            recipients: list[Any]) -> None:
+        """Placeholders: genuine, from this task, allowed for this sink, and only for their owner."""
         if any(not TOKEN_RE.fullmatch(m.group(0)) for m in LOOSE_TOKEN_RE.finditer(text)):
             self._decide("act", "damaged or forged placeholder", sink=sink)
-
-        # Placeholders: only sinks allowed to receive that secret, and only for its owner.
         for token in sorted(set(m.group(0) for m in TOKEN_RE.finditer(text))):
             field = TOKEN_RE.fullmatch(token).group(1)
             if token not in self._tokens:
@@ -330,8 +430,22 @@ class Task:
             for r in recipients:
                 if not self._owner_ok(self._tokens[token][1], r):
                     self._decide("act", "secret would go to someone other than its owner", sink=sink)
+        # An argument bound to a secret (secrets_allowed: {card_number: card}) must BE that secret's
+        # placeholder, never a value the agent typed: otherwise a fooled agent could refund to, or pay,
+        # an account of its own choosing.
+        if isinstance(rule.secrets_allowed, dict):
+            for field, arg in rule.secrets_allowed.items():
+                if arg not in args:
+                    continue
+                value = args[arg]
+                ok = isinstance(value, str) and value in self._tokens and self._tokens[value][1].field == field
+                if not ok:
+                    self._decide("act", f"{arg!r} must be the vault's placeholder for {field!r}",
+                                 shown=f"{arg!r} must be the [[vault:{field}:...]] placeholder from the record, "
+                                       f"not a typed value", sink=sink)
 
-        # Raw protected/secret values: only to their owner (or internal domains for company data).
+    def _check_raw_values(self, sink: str, text: str, recipients: list[Any]) -> None:
+        """Raw protected/secret values seen in this task: only to their owner (or internal domains)."""
         lowered = text.lower()
         for value, label in self._seen.items():
             if value.lower() not in lowered:
@@ -345,33 +459,20 @@ class Task:
                                        f"may not be sent to this recipient", sink=sink,
                                  recipient=self.vault.fp(r))
 
-        if self.vault.policy.detect_outbound and recipients:
-            from .detect import KINDS, scan_text
-            for kind, _s, _e in scan_text(TOKEN_RE.sub(" ", text)):
-                if KINDS[kind].level == "secret":
-                    self._decide("act", f"outbound message contains what looks like a {KINDS[kind].label}",
-                                 sink=sink)
-
-        if rule.approval == "always":
-            self._approve(sink, "policy requires a human to approve this action", shown)
-
+    def _run_sink(self, sink: str, rule: SinkRule, args: dict[str, Any], recipient_args: list[str],
+                  recipients: list[Any], n: int) -> Any:
+        """All checks passed (or shadow mode): unlock placeholders, run the sink, mask what comes back."""
         classes = [self._recipient_class(r, rule) for r in recipients]
         sizes = {k: len(str(v)) for k, v in args.items()}
-        flags = []
-        if rule.risk == "medium":
-            flags.append("medium-risk action")
-        if self.vault.baseline is not None:
-            flags += self.vault.baseline.check(self.template.name, sink, n, sorted(args), classes, sizes)
-
         self._calls[sink] = n
         self._sink = sink
         if self.vault.mode == "enforce":
             for a in recipient_args:     # the sink gets the checked address, not the text the agent wrote
                 v = args.get(a)
                 if isinstance(v, str) and v.strip():
-                    args[a] = ", ".join(_norm(x) for x in _as_list(v))
+                    args[a] = ", ".join(_canonical(x) for x in _as_list(v))
                 elif isinstance(v, (list, tuple)):
-                    args[a] = [_norm(x) for x in v]
+                    args[a] = [_canonical(x) for x in v]
         try:
             resolved = {k: self._resolve(v) for k, v in args.items()}
         except BoxLocked as e:
@@ -385,16 +486,20 @@ class Task:
                                 recipients=[self.vault.fp(r) for r in recipients], recipient_classes=classes,
                                 arg_sizes={self._safe_name(k): v for k, v in sizes.items()}, call=n,
                                 decision="allow")
-        if flags:
-            self._flag(sink, flags)
+        if rule.risk == "medium":
+            self._flag(sink, ["medium-risk action"])
         mask = self._mask_map(args, resolved)
         try:
             result = self.vault.sinks[sink](**resolved)
         except Exception as e:  # noqa: BLE001 - the error text may quote real values; mask them
-            raise SinkError(f"{sink} failed: {type(e).__name__}: {_mask(str(e), mask)}") from None
+            raise SinkError(f"{sink} failed: {type(e).__name__}: {redact_secrets(_mask(str(e), mask))}") from None
         result = _mask(result, mask)
-        if self.vault.recorder:
-            self.vault.recorder.sink_called(sink, shown, result)
+        # second net: secret-looking data this task never handed out (e.g. another customer's card that the
+        # sink's own code looked up) is removed too, so it can't reach the model through a result
+        caught: set[str] = set()
+        result = redact_secrets(result, caught)
+        if caught:
+            self.vault.audit.record("sink.result_redacted", task=self.id, sink=sink, kinds=sorted(caught))
         if self.vault.cache is not None:
             for src in rule.invalidates:
                 self.vault.cache.invalidate_source(src)
@@ -415,7 +520,7 @@ class Task:
                              shown=f"argument {arg!r} of {name!r} must be a {kind}", tool=name)
         if tm.read:
             key = arguments.get(tm.key_arg) if tm.key_arg else None
-            return self.read(tm.read, key)
+            return self.read(tm.read, key, fields=arguments.get("fields"))
         return self.act(tm.act, **arguments)
 
     def tool_specs(self) -> list[dict[str, Any]]:
@@ -430,6 +535,13 @@ class Task:
             required = list(tm.params)
             if tm.read and tm.key_arg and tm.key_arg not in props:
                 props[tm.key_arg] = {"type": "string", "description": "record id (optional)"}
+            if tm.read:
+                rule = self.template.reads.get(tm.read) or {}
+                names = sorted([*(rule.get("fields") or []), *(rule.get("derive") or {})])
+                if names:
+                    props["fields"] = {"type": "array", "items": {"type": "string", "enum": names},
+                                       "description": "only the fields you need" +
+                                                      (" (required)" if rule.get("on_request") else " (optional)")}
             specs.append({"name": tm.name, "description": tm.description or (tm.read or tm.act),
                           "input_schema": {"type": "object", "properties": props, "required": required}})
         return specs
@@ -502,13 +614,20 @@ class Task:
         return name if _NAME_RE.fullmatch(str(name)) else "fp:" + self.vault.fp(name)
 
     def _mask_map(self, shown: dict[str, Any], resolved: dict[str, Any]) -> dict[str, str]:
-        """Real value -> what the agent saw (placeholder or pseudonym), for masking sink output."""
+        """Real value -> what the agent saw (placeholder or pseudonym), for masking sink output: every secret
+        this task has handed out as a placeholder (not just this call's), and every pseudonym. A secret still
+        locked in a deposit box is only included once the task has opened it, so masking never opens a box."""
         out: dict[str, str] = {}
-        for token in set(m.group(0) for m in TOKEN_RE.finditer(_flatten(shown))):
-            if token in self._tokens:
-                real = str(self._resolve(token))
-                if real and real != token:
-                    out[real] = token
+        for token, (sealed, _) in self._tokens.items():
+            if token in self._revealed:
+                real = str(self._revealed[token])
+            else:
+                value = self.vault.cipher.decrypt(sealed, aad=token) if self.vault.cipher else sealed
+                if is_box_ref(value):
+                    continue
+                real = str(value)
+            if real and real != token:
+                out[real] = token
         for pseudo, real in self._pseudo.items():
             if str(real):
                 out.setdefault(str(real), pseudo)
@@ -536,7 +655,9 @@ class Task:
         (addresses, record keys, owners): only names from the policy. `shown` is the fuller
         message for the caller, who supplied those values in the first place.
         """
-        log.info("%s %s: %s", "would block" if self.vault.mode == "shadow" else "blocked", kind, reason)
+        # The log line stays generic; the reason (names only, never values) goes to the audit file.
+        log.info("%s a %s (details in the audit log)", "would block" if self.vault.mode == "shadow" else "blocked",
+                 kind)
         if self.vault.mode == "shadow":
             if (shown or reason) not in self._reported:
                 self._reported.add(shown or reason)
@@ -603,20 +724,59 @@ def _json_type_ok(value: Any, kind: str) -> bool:
     return checks.get(kind, lambda v: True)(value)
 
 
+_SEP = r"[\s.\-_/]*"
+
+
+def _mask_patterns(mask: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
+    """One pattern per real value, forgiving about how a sink might have reformatted it: any upper/lower
+    case, and for number-like values (cards, phones, account numbers) spaces, dots, dashes or nothing
+    between the digits."""
+    out = []
+    for real in sorted(mask, key=len, reverse=True):
+        if len(real) < 3:
+            continue
+        digits = re.sub(r"\D", "", real)
+        alnum = re.sub(r"[\W_]", "", real)
+        if len(digits) >= 6 and len(digits) >= 0.6 * len(alnum):
+            core = re.sub(r"[\s.\-_/]", "", real)
+            pattern = _SEP.join(re.escape(c) for c in core)
+        else:
+            pattern = re.escape(real)
+        out.append((re.compile(pattern, re.IGNORECASE), mask[real]))
+    return out
+
+
 def _mask(value: Any, mask: dict[str, str]) -> Any:
-    """Replace real values with what the agent saw, anywhere in a sink's result."""
+    """Replace real values with what the agent saw, anywhere in a sink's result: in text, in keys, as
+    numbers, in any case, and reformatted (a card "4111 1111 1111 1111" also as 4111-1111-1111-1111)."""
     if not mask:
         return value
+    return _mask_value(value, _mask_patterns(mask))
+
+
+def _mask_value(value: Any, patterns: list[tuple[re.Pattern[str], str]]) -> Any:
     if isinstance(value, str):
-        for real in sorted(mask, key=len, reverse=True):
-            if len(real) >= 3 and real in value:
-                value = value.replace(real, mask[real])
+        for pattern, shown in patterns:
+            value = pattern.sub(lambda _m, s=shown: s, value)
         return value
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        text = str(int(value)) if isinstance(value, int) or value.is_integer() else repr(value)
+        masked = _mask_value(text, patterns)
+        return masked if masked != text else value
     if isinstance(value, (list, tuple)):
-        return type(value)(_mask(v, mask) for v in value)
+        return type(value)(_mask_value(v, patterns) for v in value)
     if isinstance(value, dict):
-        return {k: _mask(v, mask) for k, v in value.items()}
+        return {_mask_value(k, patterns): _mask_value(v, patterns) for k, v in value.items()}
     return value
+
+
+def _canonical(v: Any) -> Any:
+    """What the sink receives after the checks: the bare email address (lower-case), or a plain
+    identifier with its original letters (channel ids and account numbers can be case-sensitive)."""
+    n = _norm(v)
+    return n if "@" in n else (v.strip() if isinstance(v, str) else v)
 
 
 def _norm_pattern(spec: str) -> str:

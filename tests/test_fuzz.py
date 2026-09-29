@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Fuzz tests: thousands of generated inputs against the vault's rules.
 
 Run a heavier pass with:  TASKVAULT_FUZZ_EXAMPLES=5000 pytest tests/test_fuzz.py
@@ -212,3 +214,54 @@ def test_fuzz_damaged_policies_fail_with_a_clear_error(data):
         for rule in t.sinks.values():
             assert isinstance(rule.allowed_recipients, list)
             assert all(isinstance(r, str) and len(r) > 1 or r not in ("*",) for r in rule.allowed_recipients)
+
+
+# ---- v0.5 protections under fuzzing ----------------------------------------------------------
+
+SECRETS_IN_TEXT = ["4111 1111 1111 1111", "4111-1111-1111-1111", "4111111111111111", "5555 5555 5555 4444",
+                   "123 456 782", "123456782", "sk_live_51H8xYzAbCdEfGhIjKlMn", "AKIAABCDEFGHIJKLMNOP",
+                   "GB82 WEST 1234 5698 7654 32", "062-000 12345678"]
+CONTACTS_IN_TEXT = ["0400 999 888", "+61 400 999 888", "someone@else.example", "(02) 9999 8888"]
+FILLER = ["call me", "re:", "VIP", "\n", ", ", ".", " ", "card", "number:", "tfn", "(", ")", "-", "notes:"]
+
+
+@FUZZ
+@given(parts=st.lists(st.sampled_from(SECRETS_IN_TEXT + CONTACTS_IN_TEXT + FILLER), min_size=1, max_size=12))
+def test_fuzz_scrubbed_notes_never_show_secrets_or_contacts(parts):
+    from tests.test_protections import policy, vault, world
+    w = world()
+    w.customers[12]["notes"] = " ".join(parts)
+    notes = vault(w).start_task("support_reply", customer_id=12).read("crm.customer")["notes"]
+    digits = re.sub(r"\D", "", notes)
+    for secret in SECRETS_IN_TEXT:
+        if secret in " ".join(parts) and secret[:2].isdigit():
+            assert re.sub(r"\D", "", secret) not in digits or secret not in notes, (parts, notes)
+        assert secret not in notes, (parts, notes)
+    for contact in CONTACTS_IN_TEXT:
+        assert contact not in notes, (parts, notes)
+    assert policy
+
+
+@FUZZ
+@given(asks=st.lists(st.one_of(st.none(), st.lists(st.sampled_from(
+    ["name", "email", "plan", "card_number", "notes", "phone", "address", "is_pro", "dob", "", "*"]), max_size=4)),
+    min_size=1, max_size=8),
+       budget=st.fixed_dictionaries({}, optional={"reads": st.integers(0, 4), "fields": st.integers(0, 5),
+                                                  "records": st.integers(0, 2)}))
+def test_fuzz_field_requests_and_budgets_hold(asks, budget):
+    from tests.test_protections import policy, vault, world
+    pol = policy(**{"tasks/support_reply/budget": budget,
+                    "tasks/support_reply/reads/crm.customer/derive": {"is_pro": {"equals": ["plan", "Pro"]}}})
+    t = vault(world(), pol).start_task("support_reply", customer_id=12)
+    allowed = {"name", "email", "plan", "card_number", "notes", "is_pro"}
+    reads, fields_seen = 0, set()
+    for ask in asks:
+        try:
+            got = t.read("crm.customer", fields=ask)
+        except Blocked:
+            continue
+        reads += 1
+        fields_seen |= set(got)
+        assert set(got) <= allowed and (not ask or set(got) <= set(ask)), (ask, got)   # [] = the usual fields
+        assert "4111 1111 1111 1111" not in json.dumps(got)
+    assert reads <= budget.get("reads", 99) and len(fields_seen) <= budget.get("fields", 99), (reads, fields_seen)

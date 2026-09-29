@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """`taskvault setup`: scan your data and write a starter policy for you.
 
 It looks at databases, table files, document folders and MCP servers, works
@@ -493,4 +495,7 @@ def run_setup(out_dir: str | Path, sqlite: list[str] | None = None, postgres: li
         echo(f"  {c}")
     echo("\nwrote " + ", ".join(str(p) for p in targets.values()))
     echo("next: review taskvault.yaml (every choice has a comment), then run `taskvault test`")
+    if tools:
+        echo("then protect your agent (starts in watch mode, blocks nothing yet):\n"
+             "  taskvault connect claude-desktop --task <task> --trusted <key>=<value>   (or hermes, mcp-json)")
     return 1 if report.leaks else 0

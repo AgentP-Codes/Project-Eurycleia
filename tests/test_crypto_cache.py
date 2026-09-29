@@ -1,4 +1,7 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 import json
+import os
 
 import pytest
 
@@ -30,6 +33,7 @@ def cipher(tmp_path):
     return Cipher(LocalKeyProvider(tmp_path / "customer.key"))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses access lists, not Unix permission bits")
 def test_key_file_is_private(tmp_path):
     LocalKeyProvider(tmp_path / "k.key")
     assert oct((tmp_path / "k.key").stat().st_mode)[-3:] == "600"

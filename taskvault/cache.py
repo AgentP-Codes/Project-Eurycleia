@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Read-through cache: the vault fetches from the customer's systems on demand and
 keeps a short-lived, encrypted copy. Company data stays in its own systems; the
 vault never holds a permanent full copy.

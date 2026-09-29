@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Deposit boxes: each holder's data in its own encrypted box, like a bank's safe deposit boxes.
 
 Holders are departments (``department:hr``), individual customers
@@ -17,7 +19,8 @@ Two tiers:
 Opening a high box asks the holder's key service for the private key. That
 service can require a person to approve, and the key is kept in memory only
 for a short window (`open_ttl`), then wiped. Every deposit, opening and
-withdrawal is written to a per-box, hash-chained log. `forget_holder` deletes a
+withdrawal is written to a per-box log, each entry chained to the last with a
+keyed MAC (so rewriting it needs the vault key). `compact_logs` archives old entries. `forget_holder` deletes a
 holder's boxes; an optional company recovery key lets you restore access if a
 holder loses theirs.
 
@@ -37,6 +40,7 @@ import re
 import sqlite3
 import threading
 import time
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +58,16 @@ from .errors import TaskvaultError
 
 HOLDER_TYPES = ("department", "customer", "client")
 TIERS = ("normal", "high")
+FORMAT = 2                       # box database format (0.4 used 1: tv_* tables)
 REF_RE = re.compile(r"^tvbox:(box_[0-9a-f]{24}):([0-9a-f]{24})$")
+
+
+class BoxFormatError(TaskvaultError):
+    """The box database is in a format this version can't use directly (see `taskvault boxes migrate`)."""
+
+
+class _BoxChanged(Exception):
+    """Internal: a box vanished or changed key between sealing and saving; the save is retried."""
 
 
 class BoxLocked(TaskvaultError):
@@ -200,23 +213,40 @@ class BoxDB:
                 # lock that SQLite won't wait for, so retry briefly if another connection is doing it too.
                 _retry_locked(lambda: self.conn.execute("PRAGMA journal_mode=WAL"))
             self.conn.execute("PRAGMA synchronous=NORMAL")
-        blob = "BYTEA" if self.dialect == "postgres" else "BLOB"
-        real = "DOUBLE PRECISION" if self.dialect == "postgres" else "REAL"
+            self.conn.execute("PRAGMA secure_delete=ON")       # deleted rows are overwritten, not left in free space
+        pg = self.dialect == "postgres"
+        blob, real = ("BYTEA", "DOUBLE PRECISION") if pg else ("BLOB", "REAL")
+        compact = "" if pg else " WITHOUT ROWID"       # SQLite: store rows in the key's own tree, not twice
         for ddl in [
-            f"CREATE TABLE IF NOT EXISTS tv_boxes (box_id TEXT PRIMARY KEY, holder_fp TEXT NOT NULL, "
-            f"holder_label {blob} NOT NULL, tier TEXT NOT NULL, wrapped_dek {blob}, created {real} NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS tv_boxes_holder ON tv_boxes (holder_fp)",
-            f"CREATE TABLE IF NOT EXISTS tv_items (box_id TEXT NOT NULL, item TEXT NOT NULL, "
-            f"blob {blob} NOT NULL, recovery {blob}, PRIMARY KEY (box_id, item))",
-            "CREATE TABLE IF NOT EXISTS tv_index (record_fp TEXT NOT NULL, field_fp TEXT NOT NULL, "
-            "box_id TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY (record_fp, field_fp))",
-            f"CREATE TABLE IF NOT EXISTS tv_box_log (box_id TEXT NOT NULL, seq INTEGER NOT NULL, ts {real} NOT NULL, "
-            "event TEXT NOT NULL, detail TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, "
-            "PRIMARY KEY (box_id, seq))",
+            "CREATE TABLE IF NOT EXISTS tvb_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+            f"CREATE TABLE IF NOT EXISTS tvb_boxes (box {blob} PRIMARY KEY, holder {blob} NOT NULL, "
+            f"label {blob} NOT NULL, tier SMALLINT NOT NULL, dek {blob}, created {real} NOT NULL){compact}",
+            "CREATE INDEX IF NOT EXISTS tvb_boxes_holder ON tvb_boxes (holder)",
+            f"CREATE TABLE IF NOT EXISTS tvb_items (box {blob} NOT NULL, item {blob} NOT NULL, "
+            f"blob {blob} NOT NULL, recovery {blob}, PRIMARY KEY (box, item)){compact}",
+            f"CREATE TABLE IF NOT EXISTS tvb_records (record {blob} PRIMARY KEY, holder {blob} NOT NULL, "
+            f"map {blob} NOT NULL){compact}",
+            "CREATE INDEX IF NOT EXISTS tvb_records_holder ON tvb_records (holder)",
+            f"CREATE TABLE IF NOT EXISTS tvb_log (box {blob} NOT NULL, seq INTEGER NOT NULL, ts {real} NOT NULL, "
+            f"event TEXT NOT NULL, detail TEXT NOT NULL, mac {blob} NOT NULL, PRIMARY KEY (box, seq)){compact}",
         ]:
             _retry_locked(lambda ddl=ddl: self.execute(ddl))
-        if self.dialect == "postgres":
+        found = self.execute("SELECT v FROM tvb_meta WHERE k='format'")
+        if not found:
+            _retry_locked(lambda: self.upsert("tvb_meta", ["k", "v"], ("format", str(FORMAT)), ["k"]))
+        elif int(found[0][0]) > FORMAT:
+            raise BoxFormatError("this box database was written by a newer taskvault; upgrade taskvault")
+        if not self.execute("SELECT v FROM tvb_meta WHERE k='id'"):       # this database's own identity
+            new_id = os.urandom(16).hex()
+            ins = ("INSERT INTO tvb_meta (k, v) VALUES ('id', ?) ON CONFLICT (k) DO NOTHING" if pg
+                   else "INSERT OR IGNORE INTO tvb_meta (k, v) VALUES ('id', ?)")
+            _retry_locked(lambda: self.execute(ins, (new_id,)))
+        self.db_id = self.execute("SELECT v FROM tvb_meta WHERE k='id'")[0][0]
+        if pg:
+            self.legacy = bool(self.execute("SELECT to_regclass('tv_boxes')")[0][0])
             self.conn.execute("SELECT pg_advisory_unlock(7428101)")
+        else:
+            self.legacy = bool(self.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tv_boxes'"))
 
     def lock(self, key: str) -> None:
         """Inside a transaction: serialise writers working on the same key (e.g. one box).
@@ -294,11 +324,32 @@ class BoxInfo:
     created: float
 
 
+def _jd(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _b(box: str) -> bytes:
+    """'box_<24 hex>' -> the 12 bytes stored in the database."""
+    return bytes.fromhex(box[4:])
+
+
+def _s(box: bytes) -> str:
+    return "box_" + bytes(box).hex()
+
+
+ZERO = b"\x00" * 32
+ARCHIVE_MAGIC = b"TVLOGARCHIVE1"
+
+
 class BoxStore:
     def __init__(self, db: BoxDB | str | Path, vault_keys: KeyProvider, holder_keys: HolderKeys | None = None,
                  recovery_public_key: bytes | None = None, open_ttl: float = 300,
-                 tiers: dict[str, str] | None = None, clock: Callable[[], float] = time.time):
+                 tiers: dict[str, str] | None = None, clock: Callable[[], float] = time.time,
+                 _allow_legacy: bool = False):
         self.db = db if isinstance(db, BoxDB) else BoxDB(db)
+        if self.db.legacy and not _allow_legacy:
+            raise BoxFormatError("this box database uses the taskvault 0.4 format. Upgrade it once with:\n"
+                                 "  taskvault boxes migrate --db <database> --key <vault key>")
         self.vault_keys, self.holder_keys = vault_keys, holder_keys
         self.recovery_public_key = recovery_public_key
         self.open_ttl, self.clock = open_ttl, clock
@@ -310,6 +361,14 @@ class BoxStore:
     def _mac(self, *parts: Any) -> str:
         msg = "\x00".join(str(p) for p in parts).encode()
         return hmac.new(self.vault_keys.data_key(), msg, hashlib.sha256).hexdigest()
+
+    def _macb(self, n: int, *parts: Any) -> bytes:
+        """Short keyed fingerprint (16 bytes for lookups, 12 for ids): reveals nothing without the vault key."""
+        return bytes.fromhex(self._mac(*parts))[:n]
+
+    def _subkey(self, purpose: bytes) -> bytes:
+        # separate keys for separate jobs, all derived from the vault key
+        return HKDF(SHA256(), 32, salt=None, info=b"taskvault-" + purpose).derive(self.vault_keys.data_key())
 
     def _vault(self) -> AESGCM:
         return AESGCM(self.vault_keys.data_key())
@@ -335,7 +394,7 @@ class BoxStore:
         if kind not in HOLDER_TYPES and holder != "company":
             raise ValueError("holder must look like department:x, customer:x, client:x or 'company'")
         box = self.box_id(holder, tier)
-        if self.db.execute("SELECT 1 FROM tv_boxes WHERE box_id=?", (box,)):
+        if self.db.execute("SELECT 1 FROM tvb_boxes WHERE box=?", (_b(box),)):
             return box
         if tier == "high":
             if self.holder_keys is None:
@@ -347,96 +406,169 @@ class BoxStore:
         label = self._lock_vault(holder.encode(), f"{box}|label")
         with self.db.transaction() as db:
             db.lock(box)
-            if db.execute("SELECT 1 FROM tv_boxes WHERE box_id=?", (box,)):
+            if db.execute("SELECT 1 FROM tvb_boxes WHERE box=?", (_b(box),)):
                 return box                # another writer created it first: keep ITS key, never replace it
-            db.execute("INSERT INTO tv_boxes (box_id, holder_fp, holder_label, tier, wrapped_dek, created) "
-                       "VALUES (?,?,?,?,?,?)", (box, self._mac("holder", holder), label, tier, dek, self.clock()))
+            db.execute("INSERT INTO tvb_boxes (box, holder, label, tier, dek, created) VALUES (?,?,?,?,?,?)",
+                       (_b(box), self._macb(16, "holder", holder), label, TIERS.index(tier), dek, self.clock()))
             self._log(box, "created", {"tier": tier}, db=db)
         return box
 
-    def _box_dek(self, box: str) -> bytes:
-        rows = self.db.execute("SELECT wrapped_dek FROM tv_boxes WHERE box_id=?", (box,))
-        if not rows:
-            raise KeyError("no such box")
-        return self._unlock_vault(rows[0][0], f"{box}|dek")
-
-    def _holder_of(self, box: str) -> tuple[str, str]:
-        rows = self.db.execute("SELECT holder_label, tier FROM tv_boxes WHERE box_id=?", (box,))
+    def _box_row(self, box: str) -> tuple[str, bytes | None]:
+        rows = self.db.execute("SELECT tier, dek FROM tvb_boxes WHERE box=?", (_b(box),))
         if not rows:
             raise KeyError("no such box (it may have been forgotten)")
-        return self._unlock_vault(rows[0][0], f"{box}|label").decode(), rows[0][1]
+        return TIERS[rows[0][0]], rows[0][1]
+
+    def _box_dek(self, box: str) -> bytes:
+        _, dek = self._box_row(box)
+        return self._unlock_vault(dek, f"{box}|dek")
+
+    def _holder_of(self, box: str) -> tuple[str, str]:
+        rows = self.db.execute("SELECT label, tier FROM tvb_boxes WHERE box=?", (_b(box),))
+        if not rows:
+            raise KeyError("no such box (it may have been forgotten)")
+        return self._unlock_vault(rows[0][0], f"{box}|label").decode(), TIERS[rows[0][1]]
 
     # ------------------------------------------------------------- deposit
-    def deposit(self, holder: str, tier: str, item: str, value: Any) -> str:
-        """Put one value in a box. Returns the item id. High tier needs only the holder's PUBLIC key."""
-        box = self.ensure_box(holder, tier)
-        item_id = self._mac("item", box, item)[:24]
+    def _seal(self, holder: str, tier: str, box: str, item_id: str, value: Any) -> tuple[bytes, bytes | None]:
         plain = json.dumps(value).encode()
         aad = f"{box}|{item_id}"
-        recovery = None
         if tier == "high":
             if self.holder_keys is None:
                 raise BoxLocked("high-tier boxes need holder keys (holder_keys=...)")
             inner = _seal_to(self.holder_keys.public_key(holder), plain, aad.encode())
-            blob = self._lock_vault(inner, aad)
+            recovery = None
             if self.recovery_public_key:
                 recovery = self._lock_vault(_seal_to(self.recovery_public_key, plain, aad.encode()), aad + "|rec")
-        else:
-            n = os.urandom(12)
-            blob = n + AESGCM(self._box_dek(box)).encrypt(n, plain, aad.encode())
-        self.db.upsert("tv_items", ["box_id", "item", "blob", "recovery"], (box, item_id, blob, recovery),
-                       ["box_id", "item"])
-        self._log(box, "deposit", {"item": item_id})
+            return self._lock_vault(inner, aad), recovery
+        n = os.urandom(12)
+        return n + AESGCM(self._box_dek(box)).encrypt(n, plain, aad.encode()), None
+
+    def deposit(self, holder: str, tier: str, item: str, value: Any) -> str:
+        """Put one value in a box. Returns the item id. High tier needs only the holder's PUBLIC key."""
+        box = self.ensure_box(holder, tier)
+        item_id = self._mac("item", box, item)[:24]
+        blob, recovery = self._seal(holder, tier, box, item_id, value)
+        with self.db.transaction() as db:
+            db.upsert("tvb_items", ["box", "item", "blob", "recovery"],
+                      (_b(box), bytes.fromhex(item_id), blob, recovery), ["box", "item"])
+            self._log(box, "deposit", {"item": item_id}, db=db)
         return item_id
 
     def store_record(self, source: str, key: Any, record: dict[str, Any], holder: str,
                      levels: dict[str, str]) -> dict[str, str]:
-        """Split a record into the holder's normal and high boxes by each field's level."""
-        record_fp = self._mac("record", source, key)
-        placed = {}
+        """Split a record into the holder's normal and high boxes by each field's level.
+
+        One encrypted row per record says which box and item hold each field (the field names are
+        inside the encryption, so the database reveals no schema), and each box's log gets one entry.
+
+        If the holder is forgotten while this runs, it retries (recreating the boxes); it never saves items
+        sealed with a box key that no longer exists."""
+        for attempt in range(3):
+            try:
+                return self._store_record_once(source, key, record, holder, levels)
+            except _BoxChanged:
+                if attempt == 2:
+                    raise BoxLocked("the holder's boxes kept changing while saving (forgotten meanwhile?)") from None
+        raise AssertionError("unreachable")
+
+    def _store_record_once(self, source: str, key: Any, record: dict[str, Any], holder: str,
+                           levels: dict[str, str]) -> dict[str, str]:
+        rid = self._macb(16, "record", source, key)
+        placed: dict[str, str] = {}
+        fmap: dict[str, list[str]] = {}
+        sealed = []
+        used: dict[str, bytes | None] = {}               # box -> the wrapped key its items were sealed with
         for f, v in record.items():
             tier = self.tiers.get(levels.get(f, "protected"), "normal")
-            item_id = self.deposit(holder, tier, f"{source}\x00{key}\x00{f}", v)
-            self.db.upsert("tv_index", ["record_fp", "field_fp", "box_id", "item"],
-                           (record_fp, self._mac("field", f), self.box_id(holder, tier), item_id),
-                           ["record_fp", "field_fp"])
+            box = self.ensure_box(holder, tier)
+            if box not in used:
+                try:
+                    used[box] = self._box_row(box)[1]
+                except KeyError:
+                    raise _BoxChanged() from None
+            item_id = self._mac("item", box, f"rec\x00{source}\x00{key}\x00{f}")[:24]   # never clashes with deposit()
+            try:
+                sealed.append((box, item_id, *self._seal(holder, tier, box, item_id, v)))
+            except KeyError:                       # the box was forgotten a moment ago
+                raise _BoxChanged() from None
+            fmap[f] = [box[4:], item_id]
             placed[f] = tier
-        self._field_names(record_fp, list(record))
+        new_map = self._lock_vault(_jd(fmap).encode(), f"rec|{rid.hex()}")
+        before = self.db.execute("SELECT map FROM tvb_records WHERE record=?", (rid,))
+        old_map = self._read_map(rid, before[0][0]) if before else {}
+        with self.db.transaction() as db:
+            db.lock("rec" + rid.hex())
+            locked = sorted({b for b, *_ in sealed} | {"box_" + bx for bx, _ in old_map.values()})
+            for box in locked:                     # always the same order, so two writers can't deadlock
+                db.lock(box)
+            for box, wrapped in used.items():      # forgotten (and perhaps recreated) since we sealed? start over
+                row = db.execute("SELECT dek FROM tvb_boxes WHERE box=?", (_b(box),))
+                if not row or (bytes(row[0][0]) if row[0][0] is not None else None) != \
+                        (bytes(wrapped) if wrapped is not None else None):
+                    raise _BoxChanged()
+            old = db.execute("SELECT map FROM tvb_records WHERE record=?", (rid,))
+            if old:           # a field that is gone from the record is deleted, not left behind
+                keep = {tuple(v) for v in fmap.values()}
+                gone: dict[str, int] = {}
+                for bx, it in self._read_map(rid, old[0][0]).values():
+                    if (bx, it) not in keep:
+                        db.execute("DELETE FROM tvb_items WHERE box=? AND item=?",
+                                   (bytes.fromhex(bx), bytes.fromhex(it)))
+                        gone["box_" + bx] = gone.get("box_" + bx, 0) + 1
+                for box, n in sorted(gone.items()):
+                    self._log(box, "removed", {"record": rid.hex()[:16], "fields": n}, db=db)
+            for box, item_id, blob, recovery in sealed:
+                db.upsert("tvb_items", ["box", "item", "blob", "recovery"],
+                          (_b(box), bytes.fromhex(item_id), blob, recovery), ["box", "item"])
+            db.upsert("tvb_records", ["record", "holder", "map"], (rid, self._macb(16, "holder", holder), new_map),
+                      ["record"])
+            for box in dict.fromkeys(b for b, *_ in sealed):
+                n = sum(1 for b, *_ in sealed if b == box)
+                self._log(box, "deposit", {"record": rid.hex()[:16], "fields": n}, db=db)
         return placed
 
-    def _field_names(self, record_fp: str, fields: list[str]) -> None:
-        # the list of field names is itself stored encrypted, so the index reveals no schema
-        box = "box_index"
-        blob = self._lock_vault(json.dumps(fields).encode(), f"{record_fp}|fields")
-        self.db.upsert("tv_index", ["record_fp", "field_fp", "box_id", "item"],
-                       (record_fp, "__fields__", box, base64.b64encode(blob).decode()), ["record_fp", "field_fp"])
+    def _read_map(self, rid: bytes, blob: bytes) -> dict[str, list[str]]:
+        return json.loads(self._unlock_vault(blob, f"rec|{rid.hex()}"))
 
     # ---------------------------------------------------------- withdraw
     def fetch_record(self, source: str, key: Any, task: Any = None) -> dict[str, Any] | None:
         """Normal-tier fields come back as values; high-tier fields as `tvbox:` references
         that can only be revealed later, with the holder's key."""
-        record_fp = self._mac("record", source, key)
-        rows = self.db.execute("SELECT item FROM tv_index WHERE record_fp=? AND field_fp='__fields__'",
-                               (record_fp,))
+        rid = self._macb(16, "record", source, key)
+        rows = self.db.execute("SELECT map FROM tvb_records WHERE record=?", (rid,))
         if not rows:
             return None
-        fields = json.loads(self._unlock_vault(base64.b64decode(rows[0][0]), f"{record_fp}|fields"))
-        out: dict[str, Any] = {}
-        for f in fields:
-            idx = self.db.execute("SELECT box_id, item FROM tv_index WHERE record_fp=? AND field_fp=?",
-                                  (record_fp, self._mac("field", f)))
-            if not idx:
-                continue
-            box, item = idx[0]
-            _, tier = self._holder_of(box)
+        fmap = self._read_map(rid, rows[0][0])
+        by_box: dict[str, list[tuple[str, str]]] = {}
+        for f, (bx, it) in fmap.items():
+            by_box.setdefault("box_" + bx, []).append((f, it))
+        values: dict[str, Any] = {}
+        for box, fields in by_box.items():
+            try:
+                tier, dek = self._box_row(box)
+            except KeyError:
+                continue                                              # forgotten
             if tier == "high":
-                out[f] = f"tvbox:{box}:{item}"
-            else:
-                out[f] = self._read_normal(box, item, task)
+                values.update({f: f"tvbox:{box}:{it}" for f, it in fields})
+                continue
+            marks = ",".join("?" for _ in fields)
+            found = {bytes(i).hex(): blob for i, blob in self.db.execute(
+                f"SELECT item, blob FROM tvb_items WHERE box=? AND item IN ({marks})",
+                (_b(box), *[bytes.fromhex(it) for _, it in fields]))}
+            aes = AESGCM(self._unlock_vault(dek, f"{box}|dek"))
+            got = 0
+            for f, it in fields:
+                blob = found.get(it)
+                if blob is not None:
+                    values[f] = json.loads(aes.decrypt(blob[:12], blob[12:], f"{box}|{it}".encode()))
+                    got += 1
+            self._log(box, "read", {"record": rid.hex()[:16], "fields": got, "task": task})
+        out = {f: values[f] for f in fmap if f in values}              # the record's own field order
         return out or None
 
     def _read_normal(self, box: str, item: str, task: Any) -> Any:
-        rows = self.db.execute("SELECT blob FROM tv_items WHERE box_id=? AND item=?", (box, item))
+        rows = self.db.execute("SELECT blob FROM tvb_items WHERE box=? AND item=?", (_b(box), bytes.fromhex(item)))
         if not rows:
             raise KeyError("item not found")
         blob = rows[0][0]
@@ -446,12 +578,12 @@ class BoxStore:
 
     def reveal(self, ref: str, task: Any = None, reason: str = "") -> Any:
         """Open a high-tier item. Needs the vault key AND the holder's private key (maybe with approval)."""
-        m = REF_RE.match(ref)
+        m = REF_RE.match(ref) if isinstance(ref, str) else None
         if not m:
             raise ValueError("not a box reference")
         box, item = m.groups()
         holder, tier = self._holder_of(box)
-        rows = self.db.execute("SELECT blob FROM tv_items WHERE box_id=? AND item=?", (box, item))
+        rows = self.db.execute("SELECT blob FROM tvb_items WHERE box=? AND item=?", (_b(box), bytes.fromhex(item)))
         if not rows:
             raise KeyError("item not found (it may have been forgotten)")
         aad = f"{box}|{item}"
@@ -497,7 +629,7 @@ class BoxStore:
         if not m:
             raise ValueError("not a box reference")
         box, item = m.groups()
-        rows = self.db.execute("SELECT recovery FROM tv_items WHERE box_id=? AND item=?", (box, item))
+        rows = self.db.execute("SELECT recovery FROM tvb_items WHERE box=? AND item=?", (_b(box), bytes.fromhex(item)))
         if not rows or rows[0][0] is None:
             raise BoxLocked("no recovery copy for this item")
         aad = f"{box}|{item}"
@@ -507,61 +639,193 @@ class BoxStore:
 
     # ------------------------------------------------------------- admin
     def forget_holder(self, holder: str) -> int:
-        """Delete all of one holder's boxes and their contents. The per-box logs keep a 'forgotten' entry."""
-        fp = self._mac("holder", holder)
-        boxes = [r[0] for r in self.db.execute("SELECT box_id FROM tv_boxes WHERE holder_fp=?", (fp,))]
+        """Delete all of one holder's boxes, contents and record index. The per-box logs keep a
+        'forgotten' entry (logs hold no values)."""
+        fp = self._macb(16, "holder", holder)
         with self._lock:
             self._open.pop(holder, None)
         n = 0
-        for box in boxes:
-            with self.db.transaction() as db:
-                n += len(db.execute("SELECT item FROM tv_items WHERE box_id=?", (box,)))
-                db.execute("DELETE FROM tv_items WHERE box_id=?", (box,))
-                db.execute("DELETE FROM tv_index WHERE box_id=?", (box,))
-                db.execute("DELETE FROM tv_boxes WHERE box_id=?", (box,))
-            self._log(box, "forgotten", {})
+        with self.db.transaction() as db:
+            boxes = sorted(bytes(r[0]) for r in db.execute("SELECT box FROM tvb_boxes WHERE holder=?", (fp,)))
+            for box in boxes:
+                db.lock(_s(box))
+            for box in boxes:
+                n += db.execute("SELECT COUNT(*) FROM tvb_items WHERE box=?", (box,))[0][0]
+                db.execute("DELETE FROM tvb_items WHERE box=?", (box,))
+                db.execute("DELETE FROM tvb_boxes WHERE box=?", (box,))
+            db.execute("DELETE FROM tvb_records WHERE holder=?", (fp,))
+            for box in boxes:
+                self._log(_s(box), "forgotten", {}, db=db)
+        if self.db.dialect == "sqlite":
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")      # don't leave deleted pages in the WAL file
         return n
 
     def boxes(self) -> list[BoxInfo]:
-        out = []
-        for box, label, tier, created in self.db.execute(
-                "SELECT box_id, holder_label, tier, created FROM tv_boxes ORDER BY created"):
-            n = self.db.execute("SELECT COUNT(*) FROM tv_items WHERE box_id=?", (box,))[0][0]
-            out.append(BoxInfo(box, self._unlock_vault(label, f"{box}|label").decode(), tier, n, created))
-        return out
+        rows = self.db.execute("SELECT b.box, b.label, b.tier, b.created, COUNT(i.item) FROM tvb_boxes b "
+                               "LEFT JOIN tvb_items i ON i.box = b.box GROUP BY b.box, b.label, b.tier, b.created "
+                               "ORDER BY b.created")
+        return [BoxInfo(_s(box), self._unlock_vault(label, f"{_s(box)}|label").decode(), TIERS[tier], n, created)
+                for box, label, tier, created, n in rows]
 
     # --------------------------------------------------------------- logs
+    def _chain(self, key: bytes, box: str, seq: int, ts: float, event: str, detail: str, prev: bytes) -> bytes:
+        body = json.dumps([box, seq, ts, event, detail], separators=(",", ":")).encode()
+        return hmac.new(key, prev + body, hashlib.sha256).digest()
+
     def _log(self, box: str, event: str, detail: dict[str, Any], db: BoxDB | None = None) -> None:
-        """Append to the box's hash-chained log (inside the caller's transaction, or a new one)."""
+        """Append to the box's log. Each entry is chained to the one before with a keyed MAC, so changing,
+        reordering or inserting entries is detectable, and forging them needs the vault key."""
         if db is None:
             with self.db.transaction() as tx:
                 self._log(box, event, detail, db=tx)
             return
         db.lock(box)
-        last = db.execute("SELECT seq, hash FROM tv_box_log WHERE box_id=? ORDER BY seq DESC LIMIT 1", (box,))
-        seq, prev = (last[0][0] + 1, last[0][1]) if last else (0, "0" * 64)
-        ts = round(self.clock(), 3)
-        body = json.dumps({"box": box, "seq": seq, "ts": ts, "event": event, "detail": detail, "prev": prev},
-                          sort_keys=True, default=str)
-        digest = hashlib.sha256(body.encode()).hexdigest()
-        db.execute("INSERT INTO tv_box_log (box_id, seq, ts, event, detail, prev, hash) VALUES (?,?,?,?,?,?,?)",
-                   (box, seq, ts, event, json.dumps(detail, sort_keys=True, default=str), prev, digest))
+        last = db.execute("SELECT seq, mac FROM tvb_log WHERE box=? ORDER BY seq DESC LIMIT 1", (_b(box),))
+        seq, prev = (last[0][0] + 1, bytes(last[0][1])) if last else (0, ZERO)
+        ts, d = round(self.clock(), 3), _jd(detail)
+        mac = self._chain(self._subkey(b"box-log"), box, seq, ts, event, d, prev)
+        db.execute("INSERT INTO tvb_log (box, seq, ts, event, detail, mac) VALUES (?,?,?,?,?,?)",
+                   (_b(box), seq, ts, event, d, mac))
 
     def log(self, box: str) -> list[dict[str, Any]]:
-        rows = self.db.execute("SELECT seq, ts, event, detail, prev, hash FROM tv_box_log WHERE box_id=? ORDER BY seq",
-                               (box,))
-        return [{"seq": s, "ts": t, "event": e, "detail": json.loads(d), "prev": p, "hash": h}
-                for s, t, e, d, p, h in rows]
+        rows = self.db.execute("SELECT seq, ts, event, detail, mac FROM tvb_log WHERE box=? ORDER BY seq", (_b(box),))
+        return [{"seq": s, "ts": t, "event": e, "detail": json.loads(d), "mac": bytes(m).hex()}
+                for s, t, e, d, m in rows]
 
     def verify_log(self, box: str) -> bool:
-        prev = "0" * 64
-        for e in self.log(box):
-            body = json.dumps({"box": box, "seq": e["seq"], "ts": e["ts"], "event": e["event"],
-                               "detail": e["detail"], "prev": prev}, sort_keys=True, default=str)
-            if e["prev"] != prev or hashlib.sha256(body.encode()).hexdigest() != e["hash"]:
+        """True if the box's log is intact. After `compact_logs`, the chain resumes from the anchor
+        recorded (under the MAC) in the 'compacted' entry."""
+        rows = self.db.execute("SELECT seq, ts, event, detail, mac FROM tvb_log WHERE box=? ORDER BY seq", (_b(box),))
+        if not rows:     # every box starts with a 'created' entry and compaction always leaves one behind
+            return not self.db.execute("SELECT 1 FROM tvb_boxes WHERE box=?", (_b(box),))
+        key = self._subkey(b"box-log")
+        first = rows[0][0]
+        prev = ZERO
+        if first != 0:
+            anchors = [json.loads(d) for _, _, e, d, _ in rows if e == "compacted"]
+            match = [a for a in anchors if a.get("through") == first - 1]
+            if not match:
                 return False
-            prev = e["hash"]
+            prev = bytes.fromhex(match[-1]["anchor"])
+        for i, (seq, ts, event, detail, mac) in enumerate(rows):
+            if seq != first + i:
+                return False
+            if not hmac.compare_digest(self._chain(key, box, seq, ts, event, detail, prev), bytes(mac)):
+                return False
+            prev = bytes(mac)
         return True
+
+    def compact_logs(self, older_than_days: float, archive: str | Path | None = None,
+                     min_entries: int = 10) -> dict[str, int]:
+        """Remove log entries older than N days from every box's log, leaving a 'compacted' entry with
+        counts and the chain anchor, so what remains still verifies. If `archive` is given, the removed
+        entries are first written there, compressed and encrypted with a key derived from the vault key
+        (logs hold no customer values, so compressing them leaks nothing). Boxes with fewer than
+        `min_entries` old entries are left alone: the summary would take more room than it saves. Returns counts."""
+        cutoff = self.clock() - older_than_days * 86400
+        # Only an unbroken run of old entries from the start of each log is removed: if the clock ever
+        # went backwards, an old-looking entry after newer ones must not take the newer ones with it.
+        plan = {}
+        for box, first, last, newer in self.db.execute(
+                "SELECT l.box, MIN(l.seq), MAX(l.seq), (SELECT MIN(n.seq) FROM tvb_log n "
+                "WHERE n.box = l.box AND n.ts >= ?) FROM tvb_log l GROUP BY l.box", (cutoff,)):
+            through = last if newer is None else newer - 1
+            if through - first + 1 >= max(1, min_entries):
+                plan[bytes(box)] = through
+        if not plan:
+            return {"boxes": 0, "entries": 0}
+        if archive is not None:
+            entries = []
+            for box, through in plan.items():
+                for seq, ts, event, detail, mac in self.db.execute(
+                        "SELECT seq, ts, event, detail, mac FROM tvb_log WHERE box=? AND seq<=? ORDER BY seq",
+                        (box, through)):
+                    entries.append({"box": _s(box), "seq": seq, "ts": ts, "event": event, "detail": detail,
+                                    "mac": bytes(mac).hex()})
+            write_archive(self, Path(archive), entries)
+        removed = 0
+        for box, through in plan.items():
+            name = _s(box)
+            with self.db.transaction() as db:
+                db.lock(name)
+                rows = db.execute("SELECT seq, ts, event, mac FROM tvb_log WHERE box=? AND seq<=? ORDER BY seq",
+                                  (box, through))
+                if not rows or any(ts >= cutoff for _, ts, _, _ in rows):
+                    continue
+                counts: dict[str, int] = {}
+                for _, _, event, _ in rows:
+                    counts[event] = counts.get(event, 0) + 1
+                self._log(name, "compacted", {"through": through, "anchor": bytes(rows[-1][3]).hex(),
+                                              "entries": len(rows), "from": rows[0][1], "to": rows[-1][1],
+                                              "events": counts}, db=db)
+                db.execute("DELETE FROM tvb_log WHERE box=? AND seq<=?", (box, through))
+                removed += len(rows)
+        if removed and self.db.dialect == "sqlite":
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return {"boxes": len(plan), "entries": removed}
+
+    def migrate(self) -> dict[str, int]:
+        """Upgrade a taskvault 0.4 box database in place (see boxes_migrate.py)."""
+        from .boxes_migrate import migrate
+        return migrate(self)
+
+
+def _archive_key(store: BoxStore) -> AESGCM:
+    return AESGCM(store._subkey(b"log-archive"))
+
+
+def write_archive(store: BoxStore, path: Path, entries: list[dict[str, Any]]) -> None:
+    """Compressed, encrypted archive of log entries. Never overwrites an existing file."""
+    data = zlib.compress("\n".join(_jd(e) for e in entries).encode(), 9)
+    nonce = os.urandom(12)
+    aad = ARCHIVE_MAGIC + store.db.db_id.encode()          # opens only against the database it came from
+    blob = ARCHIVE_MAGIC + nonce + _archive_key(store).encrypt(nonce, data, aad)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(blob)
+        f.flush()
+        os.fsync(f.fileno())                   # on disk before any log entry is deleted
+    if os.name != "nt":
+        dfd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+
+
+def read_archive(store: BoxStore, path: str | Path) -> list[dict[str, Any]]:
+    """Open an archive written by `compact_logs` and check each box's entries still chain together."""
+    raw = Path(path).read_bytes()
+    if not raw.startswith(ARCHIVE_MAGIC):
+        raise BoxFormatError("not a taskvault log archive")
+    body = raw[len(ARCHIVE_MAGIC):]
+    try:
+        data = _archive_key(store).decrypt(body[:12], body[12:], ARCHIVE_MAGIC + store.db.db_id.encode())
+    except Exception as e:  # noqa: BLE001
+        raise KeyUnavailable("this archive can't be opened: it belongs to another box database or vault key, "
+                             "or it was modified") from e
+    entries = [json.loads(line) for line in zlib.decompress(data).decode().splitlines() if line]
+    key = store._subkey(b"box-log")
+    last: dict[str, tuple[int, bytes]] = {}
+    for e in entries:
+        mac = bytes.fromhex(e["mac"])
+        prior = last.get(e["box"])
+        if prior is not None or e["seq"] == 0:
+            prev = prior[1] if prior else ZERO
+            if prior and e["seq"] != prior[0] + 1:
+                raise BoxFormatError(f"archive entries for {e['box']} are not continuous")
+            if not hmac.compare_digest(store._chain(key, e["box"], e["seq"], e["ts"], e["event"], e["detail"], prev),
+                                       mac):
+                raise BoxFormatError(f"archive entry {e['box']} #{e['seq']} fails its tamper check")
+        last[e["box"]] = (e["seq"], mac)
+    # the last archived entry of each box must be the anchor the database's 'compacted' entry names
+    for box, (seq, mac) in last.items():
+        for (detail,) in store.db.execute("SELECT detail FROM tvb_log WHERE box=? AND event='compacted'", (_b(box),)):
+            d = json.loads(detail)
+            if d.get("through") == seq and d.get("anchor") != mac.hex():
+                raise BoxFormatError(f"archive doesn't match this database's log for {box}")
+    return entries
 
 
 class BoxSource:

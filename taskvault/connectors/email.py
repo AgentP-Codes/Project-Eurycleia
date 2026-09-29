@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Send email over SMTP (STARTTLS)."""
 
 from __future__ import annotations

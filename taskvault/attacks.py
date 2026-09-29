@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Worst-case attack suite and policy linter.
 
 `run_attack_suite` plays an agent that has been *fully* taken over by a prompt
@@ -75,7 +77,7 @@ class _Oracle:
             for key, rec in recs.items():
                 contact = "company" if src.owner == "company" else self._contact(fx, src, key, rec)
                 for f, v in rec.items():
-                    lvl = src.level(key, f)
+                    lvl = src.level(key, f, rec)
                     if lvl in ("secret", "protected") and isinstance(v, (str, int)) and len(str(v)) >= 4:
                         self.values.append((str(v), lvl, str(contact).lower(), f"{sname}.{f}"))
 

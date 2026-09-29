@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """The MCP proxy must survive any input: answer with an error, never crash, never leak."""
 
 import io

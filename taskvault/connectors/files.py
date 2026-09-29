@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Local files: a folder of documents, or a CSV / JSON / JSONL table."""
 
 from __future__ import annotations

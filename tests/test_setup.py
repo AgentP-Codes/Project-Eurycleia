@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 import importlib.util
 import json
 import os
@@ -135,10 +137,9 @@ def test_scan_cli(tmp_path, capsys):
     assert main(["scan", str(f)]) == 0
 
 
-def test_setup_scans_a_real_postgres_database(tmp_path):
-    pgserver = pytest.importorskip("pgserver")
+def test_setup_scans_a_real_postgres_database(tmp_path, pg_url):
     psycopg = pytest.importorskip("psycopg")
-    uri = pgserver.get_server(str(tmp_path / "pg"), cleanup_mode="stop").get_uri()
+    uri = pg_url
     with psycopg.connect(uri, autocommit=True) as c:
         c.execute("DROP TABLE IF EXISTS orders; DROP TABLE IF EXISTS customers")
         c.execute("CREATE TABLE customers (id INT PRIMARY KEY, full_name TEXT, email TEXT, card_number TEXT)")

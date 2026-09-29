@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 import json
 import time
 
@@ -17,10 +19,7 @@ LEVELS = {"name": "protected", "email": "protected", "phone": "protected", "addr
 def db_url(request, tmp_path):
     if request.param == "sqlite":
         return str(tmp_path / "boxes.db")
-    pgserver = pytest.importorskip("pgserver")
-    pytest.importorskip("psycopg")
-    srv = pgserver.get_server(str(tmp_path / "pg"), cleanup_mode="stop")
-    return srv.get_uri()
+    return request.getfixturevalue("pg_url")
 
 
 @pytest.fixture
@@ -132,7 +131,7 @@ def test_every_box_has_its_own_tamper_evident_log(db_url, vault_keys):
     events = [e["event"] for e in store.log(high)]
     assert events[0] == "created" and "opened" in events and events[-1] == "reveal"
     assert store.verify_log(high)
-    store.db.execute("UPDATE tv_box_log SET event='read' WHERE box_id=? AND seq=0", (high,))
+    store.db.execute("UPDATE tvb_log SET event='read' WHERE box=? AND seq=0", (bytes.fromhex(high[4:]),))
     assert not store.verify_log(high)
 
 

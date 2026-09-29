@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Automatic detection of sensitive data.
 
 Used by `taskvault setup` to label fields without the developer doing it by
@@ -14,6 +16,7 @@ IBAN), which keeps false positives low.
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -118,6 +121,8 @@ VALUE_PATTERNS: list[tuple[str, re.Pattern[str], Any]] = [
     ("au_tfn", re.compile(r"\b\d{3} ?\d{3} ?\d{2,3}\b"), tfn_ok),
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"), None),
     ("phone", re.compile(r"(?:\+\d{1,3}[ -]?)?\(?0?[2-478]\)?[ -]?\d{2,4}[ -]?\d{3}[ -]?\d{3}\b"), None),
+    ("phone", re.compile(r"(?:\+61[ -]?|\(0[2378]\)[ -]?|\b0[2378][ -]?)\d{4}[ -]?\d{4}\b"), None),   # AU landlines
+    ("phone", re.compile(r"\+\d{1,3}(?:[ -]?\(?\d{1,4}\)?){2,5}\d\b"), None),                       # international
     ("ip_address", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), None),
 ]
 
@@ -169,16 +174,69 @@ def detect_value(value: Any) -> str | None:
 
 
 def scan_text(text: str) -> list[tuple[str, int, int]]:
-    """All sensitive spans in free text: (kind, start, end). Overlaps keep the first (most sensitive)."""
-    spans: list[tuple[str, int, int]] = []
+    """All sensitive spans in free text: (kind, start, end). Overlaps keep the first (most sensitive).
+
+    Runs in roughly linear time: accepted spans never overlap, so they're kept sorted and each new
+    match is checked only against its neighbours (a binary search), not against every span found.
+    """
+    starts: list[int] = []                      # sorted starts of accepted spans
+    spans: dict[int, tuple[str, int]] = {}      # start -> (kind, end)
+
+    def clash(start: int, end: int) -> int | None:
+        """End of an accepted span overlapping [start, end), or None."""
+        i = bisect.bisect_right(starts, start) - 1
+        worst = None
+        for j in (i, i + 1):                     # only the neighbours can overlap
+            if 0 <= j < len(starts):
+                s = starts[j]
+                e = spans[s][1]
+                if s < end and start < e:
+                    worst = e if worst is None else max(worst, e)
+        # a longer candidate can cover several short accepted spans: check the next ones too
+        j = i + 2
+        while j < len(starts) and starts[j] < end:
+            e = spans[starts[j]][1]
+            worst = e if worst is None else max(worst, e)
+            j += 1
+        return worst
+
     for kind, pattern, check in VALUE_PATTERNS:
-        for m in pattern.finditer(text):
+        pos = 0
+        while (m := pattern.search(text, pos)) is not None:
+            found = [(m.start(), m.end())]
+            nxt = m.end()
             if check is not None and not check(m.group(0)):
+                # A run of digits can hold a real value next to other numbers ("card 4111 ... 1111 123"):
+                # try the pieces inside it, longest first, then carry on from the next chunk, not the
+                # end of the run, so a value that starts inside the run is still found.
+                found = _checked_pieces(text, m.start(), m.end(), pattern, check)
+                gap = re.search(r"[ \-]+", text[m.start():m.end()])
+                nxt = m.start() + gap.end() if gap else m.end()
+            for start, end in found:
+                over = clash(start, end)
+                if over is not None:
+                    nxt = min(nxt, over)         # overlaps something more sensitive: look again after it
+                    continue
+                bisect.insort(starts, start)
+                spans[start] = (kind, end)
+            pos = max(nxt, m.start() + 1)
+    return [(spans[s][0], s, spans[s][1]) for s in starts]
+
+
+def _checked_pieces(text: str, start: int, end: int, pattern: re.Pattern[str], check: Any) -> list[tuple[int, int]]:
+    """Sub-spans of text[start:end], split at spaces/dashes, that match `pattern` on their own and pass `check`."""
+    groups = [(m.start() + start, m.end() + start) for m in re.finditer(r"[^ \-]+", text[start:end])]
+    out: list[tuple[int, int]] = []
+    n = len(groups)
+    for size in range(n - 1, 0, -1):
+        for i in range(0, n - size + 1):
+            s, e = groups[i][0], groups[i + size - 1][1]
+            if any(s < oe and os_ < e for os_, oe in out):
                 continue
-            if any(s < m.end() and m.start() < e for _, s, e in spans):
-                continue
-            spans.append((kind, m.start(), m.end()))
-    return sorted(spans, key=lambda s: s[1])
+            piece = text[s:e]
+            if pattern.fullmatch(piece) and check(piece):
+                out.append((s, e))
+    return out
 
 
 def redact(text: str) -> str:
@@ -187,6 +245,40 @@ def redact(text: str) -> str:
         out += [text[last:s], f"[{kind.upper()}]"]
         last = e
     return "".join(out + [text[last:]])
+
+
+_PLACEHOLDER = re.compile(r"\[\[vault:[a-z0-9_]+:[a-f0-9]{8}\]\]")
+
+
+def redact_secrets(value: Any, found: set[str] | None = None) -> Any:
+    """Replace secret-looking data (cards, bank accounts, tax file numbers, keys, ...) anywhere in a value:
+    in text, dict keys and numbers. `found` collects the kinds replaced. Emails and phone numbers are left
+    alone: they're only protected, and replies often legitimately mention them."""
+    found = found if found is not None else set()
+    if isinstance(value, str):
+        # the vault's own placeholders end in random hex, which can look like a tax file number by chance:
+        # blank them out (same length, so positions line up) before looking
+        masked = _PLACEHOLDER.sub(lambda m: "#" * len(m.group(0)), value)
+        spans = [(k, s, e) for k, s, e in scan_text(masked) if KINDS[k].level == "secret"]
+        if not spans:
+            return value
+        out, last = [], 0
+        for kind, s, e in spans:
+            out += [value[last:s], f"[{kind} removed by taskvault]"]
+            last = e
+            found.add(kind)
+        return "".join(out + [value[last:]])
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int) and abs(value) >= 10 ** 7:
+        text = str(value)
+        masked = redact_secrets(text, found)
+        return masked if masked != text else value
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact_secrets(v, found) for v in value)
+    if isinstance(value, dict):
+        return {redact_secrets(k, found): redact_secrets(v, found) for k, v in value.items()}
+    return value
 
 
 _RANK = {"secret": 3, "protected": 2, "normal": 1}

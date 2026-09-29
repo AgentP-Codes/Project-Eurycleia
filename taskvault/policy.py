@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Policy file loading and validation.
 
 A policy is plain YAML, kept in the developer's repo and reviewed like code:
@@ -21,6 +23,7 @@ from typing import Any
 
 import yaml
 
+from .derive import DeriveError, check_spec
 from .errors import TaskvaultError
 
 LEVELS = ("secret", "protected", "normal")
@@ -45,6 +48,8 @@ class Source:
     label_map: dict[str, str] = field(default_factory=dict)    # that label -> level
     pseudonymize: list[str] = field(default_factory=list)      # fields the model sees as stand-ins
     storage: str = "external"           # "external" (your systems) or "boxes" (taskvault deposit boxes)
+    scrub: list[str] = field(default_factory=list)             # free-text fields scanned before the model sees them
+    internal_may_see: list[str] = field(default_factory=list)  # fields an internal (self-hosted) model sees as-is
 
     def level(self, key: Any, fieldname: str, record: dict | None = None) -> str:
         """Per-document label (label_map) beats per-key and per-field levels; the most sensitive wins."""
@@ -85,6 +90,7 @@ class TaskTemplate:
     reads: dict[str, dict[str, Any]]
     sinks: dict[str, SinkRule]
     description: str = ""
+    budget: dict[str, int] = field(default_factory=dict)     # max reads / records / fields per task
 
 
 @dataclass
@@ -131,11 +137,14 @@ class Policy:
         for name, s in (raw.get("sources") or {}).items():
             s = s or {}
             _str_list(s.get("pseudonymize"), f"source {name}: pseudonymize")
+            _str_list(s.get("scrub"), f"source {name}: scrub")
+            _str_list(s.get("internal_may_see"), f"source {name}: internal_may_see")
             _mapping(s.get("fields"), f"source {name}: fields")
             _mapping(s.get("key_levels"), f"source {name}: key_levels")
             _mapping(s.get("label_map"), f"source {name}: label_map")
             _only(s, {"owner", "owner_contact", "owner_field", "fields", "key_levels",
-                          "default_level", "trust", "label_field", "label_map", "pseudonymize", "storage"},
+                          "default_level", "trust", "label_field", "label_map", "pseudonymize", "storage",
+                          "scrub", "internal_may_see"},
                   f"source {name}")
             src = Source(name=name, owner=s.get("owner", "company"), owner_contact=s.get("owner_contact"),
                          owner_field=s.get("owner_field"), fields=s.get("fields") or {},
@@ -143,6 +152,8 @@ class Policy:
                          default_level=s.get("default_level", "protected"), trust=s.get("trust", "trusted"),
                          pseudonymize=list(s.get("pseudonymize") or []),
                          storage=s.get("storage", "external"),
+                         scrub=[str(x) for x in s.get("scrub") or []],
+                         internal_may_see=[str(x) for x in s.get("internal_may_see") or []],
                          label_field=s.get("label_field"), label_map={str(k): v for k, v in
                                                                      (s.get("label_map") or {}).items()})
             if any(src.level(None, f) == "secret" for f in src.pseudonymize):
@@ -166,7 +177,13 @@ class Policy:
         tasks: dict[str, TaskTemplate] = {}
         for name, t in (raw.get("tasks") or {}).items():
             t = t or {}
-            _only(t, {"trusted", "reads", "sinks", "description"}, f"task {name}")
+            _only(t, {"trusted", "reads", "sinks", "description", "budget"}, f"task {name}")
+            budget = t.get("budget") or {}
+            _mapping(budget, f"task {name}: budget")
+            _only(budget, {"reads", "records", "fields"}, f"task {name} budget")
+            for k, v in budget.items():
+                if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                    raise PolicyError(f"task {name}: budget {k} must be a whole number")
             _str_list(t.get("trusted"), f"task {name}: trusted")
             _mapping(t.get("reads"), f"task {name}: reads", entries=True)
             _mapping(t.get("sinks"), f"task {name}: sinks", entries=True)
@@ -174,7 +191,18 @@ class Policy:
             for src, rule in reads.items():
                 if src not in sources:
                     raise PolicyError(f"task {name}: unknown source {src!r}")
-                _only(rule or {}, {"key", "keys", "fields"}, f"task {name} read {src}")
+                _only(rule or {}, {"key", "keys", "fields", "derive", "on_request"}, f"task {name} read {src}")
+                derive = (rule or {}).get("derive") or {}
+                _mapping(derive, f"task {name} read {src}: derive")
+                for dname, spec in derive.items():
+                    try:
+                        check_spec(dname, spec)
+                    except DeriveError as e:
+                        raise PolicyError(f"task {name} read {src}: derive {e}") from None
+                    if dname in ((rule or {}).get("fields") or []):
+                        raise PolicyError(f"task {name} read {src}: {dname!r} is both a field and a derived field")
+                if not isinstance((rule or {}).get("on_request", False), bool):
+                    raise PolicyError(f"task {name} read {src}: on_request must be true or false")
                 _str_list((rule or {}).get("fields"), f"task {name} read {src}: fields")
                 if "keys" in (rule or {}) and not isinstance(rule["keys"], list):
                     raise PolicyError(f"task {name} read {src}: keys must be a list, e.g. [a, b]")
@@ -184,7 +212,7 @@ class Policy:
                 _only(rule, set(SinkRule.__dataclass_fields__), f"task {name} sink {sink}")
                 where = f"task {name} sink {sink}"
                 for key in ("allowed_recipients", "args", "invalidates"):
-                    _str_list(rule.get(key), f"{where}: {key}", none_ok=key == "args")
+                    _str_list(rule.get(key), f"{where}: {key}")
                 sa = rule.get("secrets_allowed")
                 if sa is not None and not isinstance(sa, dict):
                     _str_list(sa, f"{where}: secrets_allowed")
@@ -211,7 +239,7 @@ class Policy:
                     raise PolicyError(f"task {name} sink {sink}: allowed_recipients needs recipient_arg")
                 sinks[sink] = sr
             tasks[name] = TaskTemplate(name=name, trusted=list(t.get("trusted") or []), reads=reads,
-                                       sinks=sinks, description=t.get("description", ""))
+                                       sinks=sinks, description=t.get("description", ""), budget=dict(budget))
 
         tools: dict[str, ToolMap] = {}
         for name, m in (raw.get("tools") or {}).items():
@@ -256,7 +284,7 @@ def _mapping(v: Any, where: str, entries: bool = False) -> None:
                 raise PolicyError(f"{where}: {k} must be a mapping (settings), not {type(item).__name__}")
 
 
-def _str_list(v: Any, where: str, none_ok: bool = True) -> None:
+def _str_list(v: Any, where: str) -> None:
     """A list of plain values. A bare string is rejected: iterating it would mean single characters
     (e.g. "*@acme.example" would contain '*', which allows every recipient)."""
     if v is None:

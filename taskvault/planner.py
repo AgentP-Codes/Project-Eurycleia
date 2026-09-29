@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Planner mode: provenance-tracked execution (CaMeL-style).
 
 The value-matching checks in `Task.act` can be dodged by a hijacked model that
@@ -102,9 +104,12 @@ class Planner:
         record = self.task.read(step["read"], key)
         src = self.task.vault.policy.sources[step["read"]]
         key = key if key is not None else self.task.allowed_keys(step["read"])[0]
-        owner = owner_of(src, key, self.task.vault._fetch(src.name, key) or {})
+        raw = self.task.vault._fetch(src.name, key) or {}
+        owner = owner_of(src, key, raw)
+        # Pass the record so document-level labels (label_field / label_map) count here too, exactly
+        # as in Task.read. (Missing before 0.4.3: a "Confidential" document wasn't protected in planner mode.)
         self.vars[step["id"]] = {
-            f: Labeled(v, frozenset({Label(src.level(key, f), owner, src.name, f, src.trust)}))
+            f: Labeled(v, frozenset({Label(src.level(key, f, raw), owner, src.name, f, src.trust)}))
             for f, v in record.items()
         }
 

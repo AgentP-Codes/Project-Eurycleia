@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """SIMULATED. A tiny stand-in MCP server with the demo company's data (used by the proxy tests).
 
 Every email it "sends" is appended to the file named by $FAKE_MCP_OUTBOX.

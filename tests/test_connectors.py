@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 import json
 import sqlite3
 import urllib.parse
@@ -169,10 +171,9 @@ def test_smtp_sink_uses_starttls():
     assert sent == [(True, "p@example.com", "Hi")]
 
 
-def test_sql_connector_on_real_postgres(tmp_path):
-    pgserver = pytest.importorskip("pgserver")
+def test_sql_connector_on_real_postgres(tmp_path, pg_url):
     psycopg = pytest.importorskip("psycopg")
-    uri = pgserver.get_server(str(tmp_path / "pg"), cleanup_mode="stop").get_uri()
+    uri = pg_url
     with psycopg.connect(uri, autocommit=True) as c:
         c.execute("DROP TABLE IF EXISTS customers")
         c.execute("CREATE TABLE customers (id INT PRIMARY KEY, name TEXT, email TEXT, notes TEXT)")

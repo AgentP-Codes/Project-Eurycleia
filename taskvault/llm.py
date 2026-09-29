@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """LLM adapters: run a real model behind the vault.
 
 Three roles, matching the two ways to use taskvault:
@@ -9,8 +11,8 @@ Three roles, matching the two ways to use taskvault:
   quarantined_extractor reads untrusted text and returns JSON; it has no tools
                         (planner mode)
 
-Providers wrap the vendor SDKs (optional installs):
-    pip install "taskvault[anthropic]"   "taskvault[openai]"   "taskvault[gemini]"
+Providers talk to each model's API directly with Python's standard library (see webclient.py):
+nothing extra to install. Keys come from environment variables and are never stored or logged.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Any, Protocol
 from .planner import Extractor, PlanError, validate
 from .policy import Policy
 from .vault import Blocked, Task
+from .webclient import ProviderError, post_json
 
 Dispatch = Callable[[str, dict[str, Any]], tuple[str, bool]]   # (tool, args) -> (text, is_error)
 
@@ -37,18 +40,62 @@ class Provider(Protocol):
 
 
 # ------------------------------------------------------------------ providers
-class AnthropicProvider:
-    def __init__(self, model: str | None = None, client: Any = None, max_tokens: int = 1024):
-        if client is None:  # pragma: no cover - needs the SDK and an API key
-            import anthropic
-            client = anthropic.Anthropic()
-        self.client, self.max_tokens = client, max_tokens
+# Each provider talks to its API directly with the standard library (taskvault.webclient): no vendor SDKs.
+Transport = Callable[[str, dict[str, Any], dict[str, str]], dict[str, Any]]    # (url, body, headers) -> reply
+
+
+class QuotaExhausted(RuntimeError):
+    """The model provider's quota is used up (for example a free tier's daily limit)."""
+
+
+class _HTTPProvider:
+    max_waits = 6
+
+    def __init__(self, transport: Transport | None, timeout: float):
+        self.timeout = timeout
+        self.transport = transport or (lambda url, body, headers: post_json(url, body, headers, self.timeout))
+        self.sleep = time.sleep
+
+    def _send(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        """Send, waiting and retrying when the API is busy or rate-limited. A daily quota can't be waited
+        out, so that raises QuotaExhausted straight away."""
+        for attempt in range(self.max_waits + 1):
+            try:
+                return self.transport(url, body, headers)
+            except ProviderError as e:
+                if "PerDay" in e.body or "insufficient_quota" in e.body or "credit balance" in e.body:
+                    raise QuotaExhausted(f"quota used up: {e}") from None
+                if not e.retryable or attempt == self.max_waits:
+                    raise
+                m = re.search(r'"retryDelay":\s*"([\d.]+)s"|retry in ([\d.]+)s', e.body + str(e))
+                hint = float(m.group(1) or m.group(2)) + 1 if m else e.retry_after
+                self.sleep(min(hint if hint is not None else 2 ** attempt, 120))
+        raise AssertionError("unreachable")
+
+
+class AnthropicProvider(_HTTPProvider):
+    """Claude, via the Messages API. Reads ANTHROPIC_API_KEY (never stored or logged by taskvault)."""
+
+    def __init__(self, model: str | None = None, api_key: str | None = None, max_tokens: int = 1024,
+                 base_url: str | None = None, transport: Transport | None = None, timeout: float = 120):
+        super().__init__(transport, timeout)
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not self.api_key and transport is None:
+            raise ValueError("set ANTHROPIC_API_KEY (or pass api_key=)")
+        self.base = (base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com").rstrip("/")
         self.model = model or os.environ.get("TASKVAULT_MODEL", "claude-sonnet-5")
+        self.max_tokens = max_tokens
+
+    def _call(self, **body: Any) -> dict[str, Any]:
+        return self._send(f"{self.base}/v1/messages", {"model": self.model, "max_tokens": self.max_tokens, **body},
+                          {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
+
+    @staticmethod
+    def _text(r: dict[str, Any]) -> str:
+        return "".join(b.get("text", "") for b in r.get("content") or [] if b.get("type") == "text")
 
     def complete(self, system: str, user: str) -> str:
-        r = self.client.messages.create(model=self.model, max_tokens=self.max_tokens, system=system,
-                                        messages=[{"role": "user", "content": user}])
-        return "".join(getattr(b, "text", "") for b in r.content)
+        return self._text(self._call(system=system, messages=[{"role": "user", "content": user}]))
 
     def run_tools(self, system, user, tools, dispatch, max_turns=10):
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
@@ -56,133 +103,143 @@ class AnthropicProvider:
                 for t in tools]
         text = ""
         for _ in range(max_turns):
-            r = self.client.messages.create(model=self.model, max_tokens=self.max_tokens, system=system,
-                                            messages=messages, tools=spec)
-            text = "".join(getattr(b, "text", "") for b in r.content)
-            calls = [b for b in r.content if getattr(b, "type", "") == "tool_use"]
+            r = self._call(system=system, messages=messages, tools=spec)
+            text = self._text(r)
+            calls = [b for b in r.get("content") or [] if b.get("type") == "tool_use"]
             if not calls:
                 return text
-            messages.append({"role": "assistant", "content": r.content})
+            messages.append({"role": "assistant", "content": r["content"]})
             results = []
             for c in calls:
-                out, err = dispatch(c.name, dict(c.input or {}))
-                results.append({"type": "tool_result", "tool_use_id": c.id, "content": out, "is_error": err})
+                out, err = dispatch(c.get("name", ""), dict(c.get("input") or {}))
+                results.append({"type": "tool_result", "tool_use_id": c.get("id"), "content": out, "is_error": err})
             messages.append({"role": "user", "content": results})
         return text
 
 
-class OpenAIProvider:
-    def __init__(self, model: str | None = None, client: Any = None):
-        if client is None:  # pragma: no cover - needs the SDK and an API key
-            import openai
-            client = openai.OpenAI()
-        self.client = client
+class OpenAIProvider(_HTTPProvider):
+    """Any OpenAI-compatible chat API. Reads OPENAI_API_KEY and OPENAI_BASE_URL."""
+
+    def __init__(self, model: str | None = None, api_key: str | None = None, base_url: str | None = None,
+                 transport: Transport | None = None, timeout: float = 120):
+        super().__init__(transport, timeout)
+        self.api_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY", "")
+        self.base = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         self.model = model or os.environ.get("TASKVAULT_MODEL")
         if not self.model:
             raise ValueError("set a model name (or TASKVAULT_MODEL)")
 
+    def _call(self, **body: Any) -> dict[str, Any]:
+        headers = {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        r = self._send(f"{self.base}/chat/completions", {"model": self.model, **body}, headers)
+        choices = r.get("choices") or [{}]
+        return choices[0].get("message") or {}
+
     def complete(self, system: str, user: str) -> str:
-        r = self.client.chat.completions.create(model=self.model, messages=[
-            {"role": "system", "content": system}, {"role": "user", "content": user}])
-        return r.choices[0].message.content or ""
+        msg = self._call(messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+        return msg.get("content") or ""
 
     def run_tools(self, system, user, tools, dispatch, max_turns=10):
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         spec = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                   "parameters": t["input_schema"]}} for t in tools]
         for _ in range(max_turns):
-            r = self.client.chat.completions.create(model=self.model, messages=messages, tools=spec)
-            msg = r.choices[0].message
-            if not msg.tool_calls:
-                return msg.content or ""
-            messages.append({"role": "assistant", "content": msg.content, "tool_calls": [
-                {"id": c.id, "type": "function", "function": {"name": c.function.name,
-                                                              "arguments": c.function.arguments}}
-                for c in msg.tool_calls]})
-            for c in msg.tool_calls:
-                try:
-                    args = json.loads(c.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                out, _ = dispatch(c.function.name, args)
-                messages.append({"role": "tool", "tool_call_id": c.id, "content": out})
+            msg = self._call(messages=messages, tools=spec)
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                return msg.get("content") or ""
+            messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": [
+                {"id": c.get("id"), "type": "function", "function": {
+                    "name": (c.get("function") or {}).get("name", ""),
+                    "arguments": (c.get("function") or {}).get("arguments") or "{}"}} for c in calls]})
+            for c in calls:
+                fn = c.get("function") or {}
+                args = fn.get("arguments") or "{}"
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                out, _ = dispatch(fn.get("name", ""), args if isinstance(args, dict) else {})
+                messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": out})
         return ""
 
 
-class QuotaExhausted(RuntimeError):
-    """The model provider's quota is used up (for example a free tier's daily limit)."""
+class OllamaProvider(OpenAIProvider):
+    """A free model running on your own computer with Ollama (https://ollama.com). No API key.
+
+    Uses Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1, or OLLAMA_HOST).
+    Pick a model that can use tools, e.g. hermes3, llama3.2, qwen3. Without a GPU, expect
+    several seconds to a minute per step, so timeouts are long.
+    """
+
+    max_waits = 0          # a local model isn't rate-limited; a failure is real
+
+    def __init__(self, model: str | None = None, host: str | None = None, transport: Transport | None = None,
+                 timeout: float = 900):
+        host = (host or os.environ.get("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
+        if not host.startswith("http"):
+            host = "http://" + host
+        super().__init__(model or os.environ.get("TASKVAULT_MODEL") or "hermes3", api_key="",
+                         base_url=host + "/v1", transport=transport, timeout=timeout)
 
 
-class GeminiProvider:
-    """Google Gemini via the google-genai SDK. Reads GEMINI_API_KEY (or GOOGLE_API_KEY)."""
+class GeminiProvider(_HTTPProvider):
+    """Google Gemini via its REST API. Reads GEMINI_API_KEY (or GOOGLE_API_KEY)."""
 
-    def __init__(self, model: str | None = None, client: Any = None, types_module: Any = None):
-        if client is None:  # pragma: no cover - needs the SDK and an API key
-            from google import genai
-            client = genai.Client()
-        if types_module is None:  # pragma: no cover
-            from google.genai import types as types_module
-        self.client, self.types = client, types_module
-        self.model = model or os.environ.get("TASKVAULT_MODEL", "gemini-2.5-flash")
-        self.sleep, self.max_waits = time.sleep, 10
+    def __init__(self, model: str | None = None, api_key: str | None = None, base_url: str | None = None,
+                 transport: Transport | None = None, timeout: float = 120):
+        super().__init__(transport, timeout)
+        self.max_waits = 10                    # free tiers allow only a few requests a minute
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+        if not self.api_key and transport is None:
+            raise ValueError("set GEMINI_API_KEY (or pass api_key=)")
+        self.base = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
+        self.model = model or os.environ.get("TASKVAULT_MODEL", "gemini-3.5-flash-lite")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", self.model.removeprefix("models/")):
+            raise ValueError("model name has unexpected characters")
 
-    def _generate(self, **kw: Any) -> Any:
-        """generate_content, waiting and retrying when a per-minute rate limit is hit.
-
-        Free-tier keys allow only a few requests a minute. A daily quota can't be waited out,
-        so that raises QuotaExhausted straight away.
-        """
-        for attempt in range(self.max_waits + 1):
-            try:
-                return self.client.models.generate_content(**kw)
-            except Exception as e:  # noqa: BLE001 - the SDK's error classes vary by version
-                msg = str(e)
-                if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
-                    raise
-                if "PerDay" in msg or attempt == self.max_waits:
-                    raise QuotaExhausted(f"Gemini quota used up: {msg[:300]}") from e
-                m = re.search(r"retry in ([\d.]+)s", msg)
-                self.sleep(float(m.group(1)) + 1 if m else 30)
-        raise AssertionError("unreachable")
-
-    def _config(self, system: str, tools: list[dict[str, Any]] | None = None) -> Any:
-        t = self.types
-        kw: dict[str, Any] = {"system_instruction": system}
+    def _call(self, system: str, contents: list[dict[str, Any]],
+              tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents}
         if tools:
             decls = []
-            for tool in tools:
-                d: dict[str, Any] = {"name": tool["name"], "description": tool["description"]}
-                if tool["input_schema"].get("properties"):
-                    d["parameters_json_schema"] = tool["input_schema"]
-                decls.append(t.FunctionDeclaration(**d))
-            kw["tools"] = [t.Tool(function_declarations=decls)]
-            kw["automatic_function_calling"] = t.AutomaticFunctionCallingConfig(disable=True)
-        return t.GenerateContentConfig(**kw)
+            for t in tools:
+                d: dict[str, Any] = {"name": t["name"], "description": t["description"]}
+                if t["input_schema"].get("properties"):
+                    d["parametersJsonSchema"] = t["input_schema"]
+                decls.append(d)
+            body["tools"] = [{"functionDeclarations": decls}]
+        model = self.model.removeprefix("models/")
+        r = self._send(f"{self.base}/v1beta/models/{model}:generateContent", body, {"x-goog-api-key": self.api_key})
+        cands = r.get("candidates") or [{}]
+        return cands[0].get("content") or {"role": "model", "parts": []}
+
+    @staticmethod
+    def _text(content: dict[str, Any]) -> str:
+        return "".join(p.get("text", "") for p in content.get("parts") or [] if not p.get("thought"))
 
     def complete(self, system: str, user: str) -> str:
-        r = self._generate(model=self.model, contents=user, config=self._config(system))
-        return r.text or ""
+        return self._text(self._call(system, [{"role": "user", "parts": [{"text": user}]}]))
 
     def run_tools(self, system, user, tools, dispatch, max_turns=10):
-        t = self.types
-        contents: list[Any] = [t.Content(role="user", parts=[t.Part(text=user)])]
-        config = self._config(system, tools)
+        contents: list[dict[str, Any]] = [{"role": "user", "parts": [{"text": user}]}]
         text = ""
         for _ in range(max_turns):
-            r = self._generate(model=self.model, contents=contents, config=config)
-            calls = list(r.function_calls or [])
-            try:
-                text = r.text or ""
-            except (ValueError, AttributeError):
-                text = ""
+            content = self._call(system, contents, tools)
+            text = self._text(content)
+            calls = [p["functionCall"] for p in content.get("parts") or [] if p.get("functionCall")]
             if not calls:
                 return text
-            contents.append(r.candidates[0].content)
+            contents.append({"role": "model", "parts": content.get("parts") or []})   # keeps thought signatures
             parts = []
             for c in calls:
-                out, err = dispatch(c.name, dict(c.args or {}))
-                parts.append(t.Part.from_function_response(name=c.name, response={"error" if err else "result": out}))
-            contents.append(t.Content(role="user", parts=parts))
+                out, err = dispatch(c.get("name", ""), dict(c.get("args") or {}))
+                resp: dict[str, Any] = {"name": c.get("name", ""), "response": {"error" if err else "result": out}}
+                if c.get("id"):
+                    resp["id"] = c["id"]
+                parts.append({"functionResponse": resp})
+            contents.append({"role": "user", "parts": parts})
         return text
 
 
@@ -195,7 +252,7 @@ DEFAULT_SYSTEM = (
 
 
 class ToolAgent:
-    """An agent function `(task, inputs) -> transcript` for replay, benchmarks and your app."""
+    """An agent function `(task, inputs) -> transcript` for benchmarks and your app."""
 
     def __init__(self, provider: Provider, system: str = DEFAULT_SYSTEM, max_turns: int = 10):
         self.provider, self.system, self.max_turns = provider, system, max_turns

@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """Salesforce via the REST API. Bring an OAuth access token (or a callable that refreshes one)."""
 
 from __future__ import annotations

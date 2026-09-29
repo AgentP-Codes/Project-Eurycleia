@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """SQL databases via any DB-API 2.0 driver (sqlite3, psycopg, mysqlclient, ...)."""
 
 from __future__ import annotations

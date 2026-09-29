@@ -1,19 +1,17 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """taskvault command line.
 
   taskvault setup --sqlite DB --docs DIR ...     scan your data and write a policy for you
   taskvault init [--template support|finance]    create taskvault.yaml + fixtures.yaml from a template
   taskvault check  [--policy P]                  validate and lint a policy
   taskvault test   [--policy P] [--fixtures F]   run the worst-case attack suite (CI)
-  taskvault plan   --audit FILE...               shadow-mode report: what would be blocked
+  taskvault report [--audit FILE...]             what was (or would have been) blocked
   taskvault serve  --task T --trusted k=v -- CMD run the MCP proxy in front of an MCP server
-  taskvault replay TRACE --agent mod:fn --remove TEXT   investigate a recorded session
-  taskvault traces list|pin|purge                manage recorded sessions
   taskvault audit  verify|show FILE              check or read an audit log
   taskvault keys   init|shred PATH               manage a local customer key
   taskvault scan FILE...                         find secrets and personal data in text files
-  taskvault baseline learn|show                  learn normal behaviour from audit logs
   taskvault review --audit FILE                  list actions flagged for a human look
-  taskvault store tokenize CSV --fields F        move secret columns into the vault
   taskvault boxes holder|put|list|log|forget     deposit boxes for departments, customers, clients
 """
 
@@ -56,25 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("scan", help="find secrets and personal data in text files")
     s.add_argument("files", nargs="+")
 
-    s = sub.add_parser("baseline", help="learn normal behaviour from audit logs")
-    s.add_argument("action", choices=["learn", "show"])
-    s.add_argument("--audit", nargs="+", default=[])
-    s.add_argument("--out", default="baseline.json")
-    s.add_argument("--min-tasks", type=int, default=20)
-
     s = sub.add_parser("review", help="list actions flagged for review")
     s.add_argument("--audit", nargs="+", required=True)
-
-    s = sub.add_parser("store", help="long-term secret storage")
-    s.add_argument("action", choices=["tokenize"])
-    s.add_argument("csv")
-    s.add_argument("--fields", required=True, help="comma-separated secret columns")
-    s.add_argument("--source", required=True, help="source name in your policy, e.g. crm.customer")
-    s.add_argument("--owner-field", default=None)
-    s.add_argument("--owner-name", default=None, help="owner name in the policy, e.g. customer_id")
-    s.add_argument("--key", required=True)
-    s.add_argument("--store", default=f"{DEFAULT_STORE}/secrets.db")
-    s.add_argument("--out", required=True)
 
     s = sub.add_parser("boxes", help="deposit boxes: per-holder encrypted storage")
     bsub = s.add_subparsers(dest="boxes_cmd", required=True)
@@ -98,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("box")
     b = bsub.add_parser("forget", parents=[common], help="delete all of one holder's boxes")
     b.add_argument("--holder", required=True, help="e.g. customer:12")
+    b = bsub.add_parser("compact", parents=[common], help="archive and remove old box log entries")
+    b.add_argument("--older-than", type=float, required=True, metavar="DAYS")
+    b.add_argument("--archive", default=None, help="write the removed entries here (compressed, encrypted)")
+    b.add_argument("--min-entries", type=int, default=10, help="skip boxes with fewer old entries than this")
+    b = bsub.add_parser("archive", parents=[common], help="open and check a log archive")
+    b.add_argument("file")
+    bsub.add_parser("migrate", parents=[common], help="upgrade a taskvault 0.4 box database")
 
     s = sub.add_parser("init", help="create a starter policy and fixtures from a template")
     s.add_argument("--template", choices=["support", "finance"], default="support")
@@ -115,46 +103,56 @@ def main(argv: list[str] | None = None) -> int:
                    help="count 'needs approval' as blocked instead of testing the rule behind it")
     s.add_argument("--json", action="store_true")
 
-    s = sub.add_parser("plan", help="summarise what shadow mode would have blocked")
-    s.add_argument("--audit", nargs="+", required=True)
-    s.add_argument("--policy", default=None, help="also report sources/sinks never exercised")
-
     s = sub.add_parser("serve", help="run the MCP proxy (stdio)")
     s.add_argument("--policy", default=DEFAULT_POLICY)
     s.add_argument("--task", required=True)
     s.add_argument("--trusted", action="append", default=[], metavar="KEY=VALUE")
     s.add_argument("--audit", default=None, help="append-only audit log file (JSONL)")
     s.add_argument("--shadow", action="store_true", help="log what would be blocked; block nothing")
-    s.add_argument("--key", default=None, help="customer key file: enables encrypted cache and traces")
-    s.add_argument("--record", default=None, metavar="DIR", help="save a trace of the session for replay")
-    s.add_argument("--baseline", default=None, help="baseline.json from `taskvault baseline learn`")
-    s.add_argument("--store", default=None, help="secret store (needs --key)")
+    s.add_argument("--key", default=None, help="customer key file: enables the encrypted cache")
+    s.add_argument("--taskvault-connected", action="store_true", help=argparse.SUPPRESS)  # marker from `connect`
     s.add_argument("--boxes", default=None, help="deposit box database for sources with storage: boxes")
     s.add_argument("--holder-keys", default=f"{DEFAULT_STORE}/holder-keys")
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- command to start the upstream MCP server")
-
-    s = sub.add_parser("replay", help="replay a recorded session with suspect text removed")
-    s.add_argument("trace")
-    s.add_argument("--policy", default=DEFAULT_POLICY)
-    s.add_argument("--store", default=f"{DEFAULT_STORE}/traces")
-    s.add_argument("--agent", required=True, help="module:function taking (task, inputs)")
-    s.add_argument("--remove", action="append", default=[], help="text to remove (repeatable)")
-    s.add_argument("--runs", type=int, default=5)
-    s.add_argument("--key", default=None)
-    s.add_argument("--audit", default=None)
-    s.add_argument("--investigations", default=f"{DEFAULT_STORE}/investigations")
-
-    s = sub.add_parser("traces", help="manage recorded sessions")
-    s.add_argument("action", choices=["list", "pin", "unpin", "purge"])
-    s.add_argument("trace", nargs="?")
-    s.add_argument("--store", default=f"{DEFAULT_STORE}/traces")
-    s.add_argument("--key", default=None)
-    s.add_argument("--retention-days", type=float, default=30)
 
     s = sub.add_parser("audit", help="verify or read an audit log")
     s.add_argument("action", choices=["verify", "show", "repair"])
     s.add_argument("file")
     s.add_argument("--decision", default=None)
+
+    s = sub.add_parser("api", help="local API for agents in other languages (TypeScript, Go, Java)")
+    s.add_argument("--policy", default=DEFAULT_POLICY)
+    s.add_argument("--app", default=None, metavar="MODULE:FUNCTION",
+                   help="your vault factory, e.g. taskvault_app:build_vault (from `taskvault setup`)")
+    s.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (0 = any free port)")
+    s.add_argument("--audit", default="audit.jsonl", help="audit log (when not using --app)")
+    s.add_argument("--key", default=None, help="customer key file: encrypted cache")
+    s.add_argument("--shadow", action="store_true", help="watch mode: log what would be blocked, block nothing")
+    s.add_argument("--connection-file", default=None,
+                   help="where adapters find the URL and token (default: ~/.taskvault/api.json)")
+    s.add_argument("upstream", nargs=argparse.REMAINDER, help="optional: -- an MCP server providing the tools")
+
+    s = sub.add_parser("connect", help="protect an agent's MCP servers (starts in watch mode)")
+    s.add_argument("agent", help="claude-desktop, hermes, mcp-json (with --config), crewai, langgraph")
+    s.add_argument("--policy", default=DEFAULT_POLICY)
+    s.add_argument("--task", required=False, help="the task template to run (default: the policy's only task)")
+    s.add_argument("--trusted", action="append", default=[], metavar="KEY=VALUE")
+    s.add_argument("--config", default=None, help="the agent's settings file (default: where the agent keeps it)")
+    s.add_argument("--server", action="append", default=None, help="only this MCP server (repeatable)")
+    s.add_argument("--audit", default=None, help="audit log (default: ~/.taskvault/audit.jsonl)")
+    s.add_argument("--key", default=None, help="customer key file")
+    s.add_argument("--enforce", action="store_true", help="block from the start instead of watching first")
+
+    s = sub.add_parser("disconnect", help="put an agent's original MCP servers back")
+    s.add_argument("agent", nargs="?", default=None)
+    s.add_argument("--config", default=None)
+
+    s = sub.add_parser("report", aliases=["plan"],
+                       help="what taskvault blocked, or would have (connected agents, or --audit files)")
+    s.add_argument("--audit", nargs="+", default=None, help="report on these audit logs instead")
+    s.add_argument("--policy", default=None, help="with --audit: also list tasks, sources and actions never used")
+    sub.add_parser("enforce", help="start blocking on every connected agent")
+    sub.add_parser("watch", help="go back to watch mode (log, don't block)")
 
     s = sub.add_parser("keys", help="manage a local customer key")
     s.add_argument("action", choices=["init", "shred"])
@@ -195,22 +193,8 @@ def cmd_scan(a: argparse.Namespace) -> int:
     return 1 if found else 0
 
 
-def cmd_baseline(a: argparse.Namespace) -> int:
-    from .baseline import Baseline
-    if a.action == "learn":
-        entries = [e for f in a.audit for e in AuditLog(f).entries]
-        base = Baseline.learn(entries, min_tasks=a.min_tasks)
-        base.save(a.out)
-        print(f"wrote {a.out}")
-    else:
-        base = Baseline.load(a.out)
-    for line in base.summary() or ["no clean tasks found"]:
-        print(f"  {line}")
-    return 0
-
-
 def cmd_review(a: argparse.Namespace) -> int:
-    entries = [e for f in a.audit for e in AuditLog(f).entries]
+    entries = [e for f in a.audit for e in AuditLog(f, keep=None).entries]
     flags = [e for e in entries if e.get("decision") == "flag"]
     templates = {e.get("task"): e.get("template") for e in entries if e.get("event") == "task.start"}
     if not flags:
@@ -222,27 +206,11 @@ def cmd_review(a: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_store(a: argparse.Namespace) -> int:
-    import csv
-
-    from .store import SecretStore, tokenize_rows
-    with open(a.csv, newline="", encoding="utf-8-sig") as f:
-        rows = list(csv.DictReader(f))
-    store = SecretStore(_cipher(a.key), a.store)
-    fields = [x.strip() for x in a.fields.split(",") if x.strip()]
-    out = tokenize_rows(store, rows, fields, a.source, owner_field=a.owner_field, owner_name=a.owner_name)
-    with open(a.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(out[0]) if out else fields)
-        w.writeheader()
-        w.writerows(out)
-    print(f"moved {len(fields)} column(s) of {len(out)} rows into {a.store}; wrote {a.out} with references")
-    return 0
-
-
 def _box_store(a: argparse.Namespace):
     from .boxes import BoxStore, LocalHolderKeys
     from .crypto import LocalKeyProvider
-    return BoxStore(a.db, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys))
+    return BoxStore(a.db, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys),
+                    _allow_legacy=getattr(a, "boxes_cmd", "") == "migrate")
 
 
 def cmd_boxes(a: argparse.Namespace) -> int:
@@ -295,6 +263,28 @@ def cmd_boxes(a: argparse.Namespace) -> int:
     elif a.boxes_cmd == "forget":
         n = store.forget_holder(a.holder)
         print(f"deleted {n} items from {a.holder}'s boxes")
+    elif a.boxes_cmd == "compact":
+        if a.archive and Path(a.archive).exists():
+            print(f"{a.archive} already exists; choose a new archive file", file=sys.stderr)
+            return 1
+        n = store.compact_logs(a.older_than, a.archive, a.min_entries)
+        where = f", archived to {a.archive}" if a.archive and n["entries"] else " (not archived)"
+        print(f"compacted {n['entries']} log entries in {n['boxes']} boxes{where if n['entries'] else ''}")
+    elif a.boxes_cmd == "archive":
+        from .boxes import read_archive
+        entries = read_archive(store, a.file)
+        for e in entries:
+            print(f"{e['box']}  {e['seq']:>4}  {e['ts']:.0f}  {e['event']:<12} {e['detail']}")
+        print(f"{len(entries)} entries, archive intact")
+    elif a.boxes_cmd == "migrate":
+        n = store.migrate()
+        if not n["boxes"]:
+            print("already in the current format; nothing to do")
+        else:
+            print(f"upgraded {n['boxes']} boxes, {n['items']} items, {n['records']} records and "
+                  f"{n['log_entries']} log entries; the vault key matched and every old log passed its tamper check")
+            if n["skipped_records"]:
+                print(f"{n['skipped_records']} damaged record index entries were left out (their items are kept)")
     return 0
 
 
@@ -309,7 +299,8 @@ def cmd_init(a: argparse.Namespace) -> int:
             return 1
         target.write_text(resources.files("taskvault.templates").joinpath(src).read_text())
         print(f"created {target}")
-    print("\nNext: edit the policy for your data, then run `taskvault check` and `taskvault test`.")
+    print("\nNext: edit the policy for your data, then run `taskvault check` and `taskvault test`.\n"
+          "Then `taskvault connect <agent>` puts it in front of your agent in watch mode.")
     return 0
 
 
@@ -333,8 +324,8 @@ def cmd_test(a: argparse.Namespace) -> int:
     return 1 if report.leaks else 0
 
 
-def cmd_plan(a: argparse.Namespace) -> int:
-    entries = [e for f in a.audit for e in AuditLog(f).entries]
+def _report_files(a: argparse.Namespace) -> int:
+    entries = [e for f in a.audit for e in AuditLog(f, keep=None).entries]
     would = [e for e in entries if e.get("decision") == "would_block"]
     blocked = [e for e in entries if e.get("decision") == "block"]
     tasks = {e.get("task") for e in entries if e.get("event") == "task.start"}
@@ -380,7 +371,6 @@ def _cipher(key: str | None):
 def cmd_serve(a: argparse.Namespace) -> int:
     from .cache import EncryptedCache
     from .mcp import ProxyServer, StdioMCPClient, upstream_bindings
-    from .traces import Recorder, TraceStore
     from .vault import Vault
 
     upstream = [x for x in a.upstream if x != "--"]
@@ -391,18 +381,6 @@ def cmd_serve(a: argparse.Namespace) -> int:
     trusted = dict(kv.split("=", 1) for kv in a.trusted)
     trusted = {k: int(v) if v.isdigit() else v for k, v in trusted.items()}
     cipher = _cipher(a.key)
-    recorder = Recorder() if a.record else None
-    store = None
-    if a.store:
-        from .store import SecretStore
-        if not cipher:
-            print("--store needs --key", file=sys.stderr)
-            return 2
-        store = SecretStore(cipher, a.store)
-    baseline = None
-    if a.baseline:
-        from .baseline import Baseline
-        baseline = Baseline.load(a.baseline)
     client = StdioMCPClient(upstream)
     try:
         sources, sinks = upstream_bindings(policy.raw, client)
@@ -417,13 +395,10 @@ def cmd_serve(a: argparse.Namespace) -> int:
             sources.update(box_sources(policy, boxes))
         vault = Vault(policy, sources, sinks, audit=AuditLog(a.audit), mode="shadow" if a.shadow else "enforce",
                       cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None,
-                      recorder=recorder, store=store, baseline=baseline, boxes=boxes)
+                      boxes=boxes)
         ProxyServer(vault, a.task, trusted).serve(sys.stdin, sys.stdout)
     finally:
         client.close()
-        if recorder and recorder.trace.template:
-            tid = TraceStore(a.record, cipher).save(recorder.trace)
-            print(f"trace saved: {tid}", file=sys.stderr)
     return 0
 
 
@@ -435,47 +410,13 @@ def _load_agent(spec: str):
     return getattr(importlib.import_module(mod), fn)
 
 
-def cmd_replay(a: argparse.Namespace) -> int:
-    from .traces import TraceStore, investigate
-    policy = Policy.load(a.policy)
-    trace = TraceStore(a.store, _cipher(a.key)).load(a.trace)
-    result = investigate(policy, trace, _load_agent(a.agent), a.remove, runs=a.runs,
-                         store=a.investigations, audit=AuditLog(a.audit) if a.audit else None)
-    print(f"investigation {result['id']} ({a.runs} runs with vs without the removed text)\n")
-    if not result["findings"]:
-        print("No difference: the removed text did not change what the agent tried to do.")
-    for f in result["findings"]:
-        cause = "likely caused by the removed text" if f["likely_caused_by_removed_text"] else "only without it"
-        print(f"  {f['event']}\n     with: {f['with_text']}   without: {f['without_text']}   "
-              f"-> {cause} (confidence {f['confidence']})")
-    for e in result["errors"]:
-        print(f"  agent error: {e}")
-    return 0
-
-
-def cmd_traces(a: argparse.Namespace) -> int:
-    from .traces import TraceStore
-    store = TraceStore(a.store, _cipher(a.key), retention_days=a.retention_days)
-    if a.action == "list":
-        for tid in store.list():
-            t = store.load(tid)
-            print(f"{tid}  {t.template:<24} reads={len(t.reads):<3} actions={len(t.actions):<3}"
-                  f"{'  pinned' if t.pinned else ''}")
-    elif a.action in ("pin", "unpin"):
-        store.pin(a.trace, a.action == "pin")
-        print(f"{a.action}ned {a.trace}")
-    else:
-        print(f"removed {store.purge()} expired traces")
-    return 0
-
-
 def cmd_audit(a: argparse.Namespace) -> int:
     if a.action == "repair":
         side = AuditLog.repair(a.file)
         print(f"moved an unfinished last line to {side}; the log is usable again" if side
               else f"{a.file}: nothing to repair")
         return 0
-    log = AuditLog(a.file)
+    log = AuditLog(a.file, keep=None)
     if a.action == "verify":
         ok = log.verify()
         print(f"{a.file}: {len(log.entries)} entries, chain {'valid' if ok else 'BROKEN - log was modified'}")
@@ -484,6 +425,102 @@ def cmd_audit(a: argparse.Namespace) -> int:
         if a.decision and e.get("decision") != a.decision:
             continue
         print(json.dumps({k: v for k, v in e.items() if k not in ("hash", "prev")}, default=str))
+    return 0
+
+
+def cmd_api(a: argparse.Namespace) -> int:
+    import os
+    import signal
+
+    from .api import ApiServer, remote_sinks
+    from .connect import home
+    from .vault import Vault
+
+    policy = Policy.load(a.policy)
+    sinks: dict = dict(remote_sinks(policy))         # actions your other-language app runs itself
+    client = None
+    if a.app:
+        vault = _load_agent(a.app)(sinks=sinks)
+        if not isinstance(vault, Vault):
+            print(f"{a.app} must return a taskvault Vault", file=sys.stderr)
+            return 2
+    else:
+        sources: dict = {}
+        upstream = [x for x in a.upstream if x != "--"]
+        if upstream:
+            from .mcp import StdioMCPClient, upstream_bindings
+            client = StdioMCPClient(upstream)
+            up_sources, up_sinks = upstream_bindings(policy.raw, client)
+            sources.update(up_sources)
+            sinks.update(up_sinks)
+        cipher = _cipher(a.key)
+        from .cache import EncryptedCache
+        vault = Vault(policy, sources, sinks, audit=AuditLog(a.audit), mode="shadow" if a.shadow else "enforce",
+                      cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None)
+    server = ApiServer(vault, port=a.port, token=os.environ.get("TASKVAULT_API_TOKEN") or None)
+    conn = server.write_connection_file(Path(a.connection_file) if a.connection_file else home() / "api.json")
+    print(f"taskvault api listening on {server.url} (this computer only)\n"
+          f"adapters find the address and token in {conn}\n"
+          f"mode: {'WATCH (logging only)' if vault.mode == 'shadow' else 'ENFORCE'}   stop with Ctrl+C", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.httpd.server_close()
+        server.remove_connection_file()
+        if client:
+            client.close()
+    return 0
+
+
+def cmd_connect(a: argparse.Namespace) -> int:
+    from .connect import connect
+    task = a.task
+    if not task and a.agent not in ("crewai", "langgraph"):
+        tasks = list(Policy.load(a.policy).tasks)
+        if len(tasks) != 1:
+            print(f"choose a task with --task ({', '.join(tasks)})", file=sys.stderr)
+            return 2
+        task = tasks[0]
+    names = connect(a.agent, a.policy, task or "", a.trusted, config=a.config, servers=a.server, audit=a.audit,
+                    key=a.key, enforce=a.enforce)
+    mode = "ENFORCE (blocking)" if a.enforce else "WATCH (logging only, nothing is blocked yet)"
+    print(f"protected {len(names)} MCP server(s): {', '.join(names)}\nmode: {mode}\n"
+          f"a backup of the settings file was saved next to it (.taskvault-backup)\n"
+          f"restart the agent app so it picks up the change")
+    if not a.enforce:
+        print("next: use the agent as normal, then run `taskvault report`, then `taskvault enforce`")
+    return 0
+
+
+def cmd_disconnect(a: argparse.Namespace) -> int:
+    from .connect import disconnect
+    names = disconnect(a.agent, a.config)
+    print(f"restored {len(names)} MCP server(s): {', '.join(names) or 'none'} (restart the agent app)")
+    return 0
+
+
+def cmd_report(a: argparse.Namespace) -> int:
+    if a.audit:
+        return _report_files(a)
+    from .connect import report
+    print(report())
+    return 0
+
+
+def cmd_enforce(a: argparse.Namespace) -> int:
+    from .connect import set_mode
+    names = set_mode(True)
+    print(f"enforcing on {len(names)} server(s): {', '.join(names) or 'already enforcing'} (restart the agent app)")
+    return 0
+
+
+def cmd_watch(a: argparse.Namespace) -> int:
+    from .connect import set_mode
+    names = set_mode(False)
+    print(f"watch mode on {len(names)} server(s): {', '.join(names) or 'already watching'} (restart the agent app)")
     return 0
 
 
@@ -502,10 +539,10 @@ def cmd_keys(a: argparse.Namespace) -> int:
 
 
 COMMANDS: dict[str, Any] = {
-    "setup": cmd_setup, "boxes": cmd_boxes, "scan": cmd_scan, "baseline": cmd_baseline, "review": cmd_review,
-    "store": cmd_store,
-    "init": cmd_init, "check": cmd_check, "test": cmd_test, "plan": cmd_plan, "serve": cmd_serve,
-    "replay": cmd_replay, "traces": cmd_traces, "audit": cmd_audit, "keys": cmd_keys,
+    "setup": cmd_setup, "init": cmd_init, "check": cmd_check, "test": cmd_test, "plan": cmd_report,
+    "serve": cmd_serve, "api": cmd_api, "connect": cmd_connect, "disconnect": cmd_disconnect, "report": cmd_report,
+    "enforce": cmd_enforce, "watch": cmd_watch, "review": cmd_review, "audit": cmd_audit, "keys": cmd_keys,
+    "scan": cmd_scan, "boxes": cmd_boxes,
 }
 
 if __name__ == "__main__":

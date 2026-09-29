@@ -1,3 +1,5 @@
+# Copyright 2026 AgentP-Codes
+# SPDX-License-Identifier: AGPL-3.0-only
 """MCP proxy: put the vault in front of an existing agent with no code changes.
 
     agent host  <--stdio MCP-->  taskvault proxy  <--stdio MCP-->  your MCP server(s)
