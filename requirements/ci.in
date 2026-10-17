@@ -1,6 +1,6 @@
 # Everything CI needs to test eurycleia. Locked with checksums in ci.lock.
 -r runtime.in
-pytest>=8
+pytest>=9.1.1
 ruff>=0.5
 hypothesis>=6
 psycopg[binary]>=3.1
