@@ -1,0 +1,82 @@
+name: release
+
+# Runs when you publish a release on GitHub (Releases -> Draft a new release -> tag like v0.5.0 -> Publish).
+# It runs the tests and the vulnerability check, builds the package from the locked libraries, writes a
+# software bill of materials (SBOM: the exact list of what's inside) and checksums, signs a record of where
+# and how it was built (a GitHub build attestation, checkable with `gh attestation verify`), and attaches
+# all of it to the release you published.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write         # attach files to the release
+      id-token: write         # sign the build attestation (Sigstore, no keys to manage)
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --require-hashes -r requirements/ci.lock
+      - name: Tests must pass before anything is attached
+        run: |
+          python -m pip install --no-deps -e .
+          ruff check . && pytest -q
+      - name: No known vulnerabilities in what eurycleia installs
+        run: pip-audit -r requirements/runtime.lock --require-hashes --disable-pip --strict
+      - name: The release tag matches the package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          v=$(python -c "import eurycleia; print(eurycleia.__version__)")
+          test "v$v" = "$TAG" || { echo "release tag $TAG but package says $v"; exit 1; }
+      - name: Build
+        run: python -m build --no-isolation --outdir dist
+      - name: The package contains every module
+        run: python requirements/check_wheel.py dist/*.whl
+      - name: Software bill of materials and checksums
+        run: |
+          python requirements/sbom.py requirements/runtime.lock dist/eurycleia-sbom.cdx.json
+          cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Sign where and how this was built
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: "dist/*"
+      - name: Attach the files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+
+  pypi:
+    # Off until the project's final name is chosen: set the repository variable PUBLISH_TO_PYPI to "true"
+    # (Settings -> Secrets and variables -> Actions -> Variables) after adding this repository as a trusted
+    # publisher on pypi.org. No PyPI password or token is stored anywhere.
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write         # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
