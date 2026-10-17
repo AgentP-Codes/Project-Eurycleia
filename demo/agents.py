@@ -9,7 +9,7 @@ the outcome is safe even then. A real LLM can drive the same tool interface.
 
 from __future__ import annotations
 
-from taskvault import Blocked, Task
+from eurycleia import Blocked, Task
 
 from .world import ATTACKER, World
 

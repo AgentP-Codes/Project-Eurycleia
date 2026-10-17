@@ -1,9 +1,9 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A real support agent behind taskvault: Postgres CRM, SMTP email, Claude as the model.
+"""A real support agent behind eurycleia: Postgres CRM, SMTP email, Claude as the model.
 
-    pip install "taskvault[postgres]"
-    taskvault keys init ./customer.key
+    pip install "eurycleia[postgres]"
+    eurycleia keys init ./customer.key
     export ANTHROPIC_API_KEY=... DATABASE_URL=postgresql://...
     python examples/support_agent.py 12 "I was charged twice, can I get a refund?"
 
@@ -14,12 +14,12 @@ ticket sender). The ticket text is untrusted and goes to the model as data.
 import os
 import sys
 
-from taskvault import AuditLog, Policy, Vault
-from taskvault.cache import EncryptedCache
-from taskvault.connectors import RESTSink, SMTPSink, SQLConnector
-from taskvault.connectors.base import HttpClient
-from taskvault.crypto import Cipher, LocalKeyProvider
-from taskvault.llm import AnthropicProvider, ToolAgent
+from eurycleia import AuditLog, Policy, Vault
+from eurycleia.cache import EncryptedCache
+from eurycleia.connectors import RESTSink, SMTPSink, SQLConnector
+from eurycleia.connectors.base import HttpClient
+from eurycleia.crypto import Cipher, LocalKeyProvider
+from eurycleia.llm import AnthropicProvider, ToolAgent
 
 
 def build_vault() -> Vault:
@@ -27,7 +27,7 @@ def build_vault() -> Vault:
 
     connect = lambda: psycopg.connect(os.environ["DATABASE_URL"])  # noqa: E731
     cipher = Cipher(LocalKeyProvider("customer.key", create=False))
-    policy = Policy.load("taskvault.yaml")          # e.g. from `taskvault init --template support`
+    policy = Policy.load("eurycleia.yaml")          # e.g. from `eurycleia init --template support`
     return Vault(
         policy,
         sources={

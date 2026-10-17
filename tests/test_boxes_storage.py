@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from demo.world import World
-from taskvault.boxes import BoxFormatError, BoxStore, LocalHolderKeys, StaticHolderKeys, holder_name, read_archive
-from taskvault.crypto import KeyUnavailable, LocalKeyProvider
+from eurycleia.boxes import BoxFormatError, BoxStore, LocalHolderKeys, StaticHolderKeys, holder_name, read_archive
+from eurycleia.crypto import KeyUnavailable, LocalKeyProvider
 
 LEVELS = {"name": "protected", "email": "protected", "phone": "protected", "address": "protected",
           "plan": "normal", "card_number": "secret", "customer_id": "normal"}
@@ -259,7 +259,7 @@ def test_concurrent_record_writes_in_opposite_field_orders_do_not_deadlock(tmp_p
     """Review finding: on Postgres, two records locking the same boxes in opposite orders could deadlock."""
     from concurrent.futures import ThreadPoolExecutor
 
-    from taskvault.boxes import BoxDB
+    from eurycleia.boxes import BoxDB
     if backend == "postgres":
         url = request.getfixturevalue("pg_url")
     else:
@@ -350,7 +350,7 @@ def test_migration_refuses_the_wrong_vault_key_even_without_records(tmp_path):
 
 
 def test_cli_migrate_compact_and_archive(tmp_path, capsys):
-    from taskvault.cli import main
+    from eurycleia.cli import main
     d, _, _ = _old_copy(tmp_path)
     common = ["--key", str(d / "vault.key"), "--db", str(d / "boxes.db"), "--holder-keys", str(d / "holder-keys")]
     assert main(["boxes", "migrate", *common]) == 0
@@ -378,6 +378,7 @@ def test_a_holder_forgotten_mid_save_never_leaves_unreadable_items(tmp_path):
         if not fired:
             fired.append(1)
             store.forget_holder("customer:5")        # someone forgets the customer right now...
+            store.unforget_holder("customer:5")      # ...they come straight back (0.6: tombstones)...
             store.ensure_box("customer:5", "normal")  # ...and the box is recreated with a NEW key
         return out
 

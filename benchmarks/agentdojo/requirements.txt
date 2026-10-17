@@ -1,0 +1,2 @@
+# AgentDojo benchmark only (not needed for eurycleia itself)
+agentdojo==0.1.35

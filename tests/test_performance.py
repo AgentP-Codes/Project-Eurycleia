@@ -1,6 +1,6 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Performance budget: taskvault must stay light. Generous limits so slow CI machines pass;
+"""Performance budget: eurycleia must stay light. Generous limits so slow CI machines pass;
 typical figures are far lower (about 0.2 ms per task on a laptop)."""
 
 import time
@@ -28,11 +28,11 @@ def test_overhead_per_task_stays_within_budget():
 def test_core_import_is_light():
     import subprocess
     import sys
-    code = ("import sys, time; t=time.perf_counter(); import taskvault; "
+    code = ("import sys, time; t=time.perf_counter(); import eurycleia; "
             "print(time.perf_counter()-t); print(','.join(sorted(m for m in sys.modules if m.split('.')[0] in "
             "{'anthropic','openai','google','boto3','psycopg','pymongo','crewai'})))")
     root = str(__import__("pathlib").Path(__file__).resolve().parent.parent)     # works from any folder
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                          cwd=root).stdout.split("\n")
     assert float(out[0]) < 2.0, out[0]
-    assert out[1] == "", f"optional libraries loaded by 'import taskvault': {out[1]}"
+    assert out[1] == "", f"optional libraries loaded by 'import eurycleia': {out[1]}"

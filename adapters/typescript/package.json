@@ -1,10 +1,10 @@
 {
-  "name": "taskvault-client",
+  "name": "eurycleia-client",
   "version": "0.5.0",
-  "description": "taskvault for TypeScript/JavaScript agents: a zero-dependency client for `taskvault api`.",
+  "description": "eurycleia for TypeScript/JavaScript agents: a zero-dependency client for `eurycleia api`.",
   "license": "Apache-2.0",
   "author": "AgentP-Codes",
-  "repository": "github:AgentP-Codes/Task-Vault-Name-is-bound-to-Change-",
+  "repository": "github:AgentP-Codes/project-eurycleia",
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",

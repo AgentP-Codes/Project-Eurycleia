@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Fuzz tests: thousands of generated inputs against the vault's rules.
 
-Run a heavier pass with:  TASKVAULT_FUZZ_EXAMPLES=5000 pytest tests/test_fuzz.py
+Run a heavier pass with:  EURYCLEIA_FUZZ_EXAMPLES=5000 pytest tests/test_fuzz.py
 """
 
 import copy
@@ -19,9 +19,9 @@ from hypothesis import strategies as st  # noqa: E402
 
 from demo.__main__ import POLICY, make_vault  # noqa: E402
 from demo.world import World  # noqa: E402
-from taskvault import Blocked, Policy, SinkError, Vault  # noqa: E402
+from eurycleia import Blocked, Policy, SinkError, Vault  # noqa: E402
 
-N = int(os.environ.get("TASKVAULT_FUZZ_EXAMPLES", "300"))
+N = int(os.environ.get("EURYCLEIA_FUZZ_EXAMPLES", "300"))
 FUZZ = settings(max_examples=N, deadline=None, suppress_health_check=list(HealthCheck), derandomize=False)
 
 OWNER = "priya.shah@example.com"
@@ -194,7 +194,7 @@ def _paths(d, prefix=()):
 @FUZZ
 @given(data=st.data())
 def test_fuzz_damaged_policies_fail_with_a_clear_error(data):
-    from taskvault import PolicyError
+    from eurycleia import PolicyError
     raw = copy.deepcopy(Policy.load(POLICY).raw)
     paths = list(_paths(raw))
     for _ in range(data.draw(st.integers(1, 3))):
@@ -265,3 +265,11 @@ def test_fuzz_field_requests_and_budgets_hold(asks, budget):
         assert set(got) <= allowed and (not ask or set(got) <= set(ask)), (ask, got)   # [] = the usual fields
         assert "4111 1111 1111 1111" not in json.dumps(got)
     assert reads <= budget.get("reads", 99) and len(fields_seen) <= budget.get("fields", 99), (reads, fields_seen)
+
+
+def test_a_tax_file_number_half_covered_by_a_card_shaped_number_is_still_hidden():
+    # found by the fuzz test above: a card-shaped window ("782 0400 999 888") took the TFN's last group, and
+    # the TFN, and a second one after it, were left showing
+    from eurycleia.detect import redact_secrets
+    out = redact_secrets("123 456 782 0400 999 888 123 456 782")
+    assert not re.search(r"\d{3}", out), out

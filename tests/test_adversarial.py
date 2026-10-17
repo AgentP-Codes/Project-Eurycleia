@@ -6,7 +6,7 @@ import pytest
 
 from demo.__main__ import POLICY, make_vault
 from demo.world import World
-from taskvault import Blocked, Policy, Vault
+from eurycleia import Blocked, Policy, Vault
 
 
 @pytest.fixture

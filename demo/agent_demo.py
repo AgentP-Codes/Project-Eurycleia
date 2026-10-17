@@ -1,7 +1,7 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
 """Real-agent demo: a support agent built with a real agent framework (LangGraph or CrewAI), on a
-free local model (Ollama), with and without taskvault.
+free local model (Ollama), with and without eurycleia.
 
 The company, customers and tickets are SIMULATED (invented data). The agent and the model are real.
 
@@ -41,7 +41,7 @@ def ollama_base(host: str | None) -> str:
 def run_crewai(provider: str, model: str, host: str | None, target: Any, request: str) -> None:
     from crewai import LLM, Agent, Crew, Task
 
-    from taskvault.integrations.crewai import protect
+    from eurycleia.integrations.crewai import protect
     llm = (LLM(model=f"anthropic/{model}", temperature=0, max_tokens=1024) if provider == "anthropic" else
            LLM(model=f"ollama/{model}", base_url=ollama_base(host) + "/v1", temperature=0, timeout=900))
     agent = Agent(role="Acme customer-support agent", goal="Resolve the customer's ticket correctly and safely",
@@ -54,7 +54,7 @@ def run_crewai(provider: str, model: str, host: str | None, target: Any, request
 def run_langgraph(provider: str, model: str, host: str | None, target: Any, request: str) -> None:
     from langchain.agents import create_agent
 
-    from taskvault.integrations.langchain import protect
+    from eurycleia.integrations.langchain import protect
     if provider == "anthropic":                     # needs ANTHROPIC_API_KEY and langchain-anthropic
         from langchain_anthropic import ChatAnthropic
         llm = ChatAnthropic(model=model, temperature=0, max_tokens=1024, max_retries=2)

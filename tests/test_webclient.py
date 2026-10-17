@@ -14,8 +14,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from taskvault import webclient
-from taskvault.webclient import ProviderError, check_url, post_json
+from eurycleia import webclient
+from eurycleia.webclient import ProviderError, check_url, post_json
 
 
 class Server:
@@ -175,7 +175,7 @@ def test_certificates_are_verified(tmp_path, monkeypatch):
 def test_a_real_provider_through_a_local_server():
     """The whole path: provider -> built-in client -> a local server speaking the OpenAI-compatible API
     (like Ollama)."""
-    from taskvault.llm import OllamaProvider
+    from eurycleia.llm import OllamaProvider
     srv = Server(reply(body={"choices": [{"message": {"role": "assistant", "content": "hello from local"}}]}))
     try:
         p = OllamaProvider("hermes3", host=srv.url)

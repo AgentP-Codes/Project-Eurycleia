@@ -1,6 +1,6 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""The local API used by the TypeScript, Go and Java adapters."""
+"""The local API used by the TypeScript adapter (and any client that signs requests the same way)."""
 
 import http.client
 import json
@@ -10,8 +10,8 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.api_app import build_vault
-from taskvault import Policy
-from taskvault.api import ApiError, ApiServer, RemoteSink, remote_sinks, response_mac, signed_headers
+from eurycleia import Policy
+from eurycleia.api import ApiError, ApiServer, RemoteSink, remote_sinks, response_mac, signed_headers
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def call(srv, method, path, body=None, headers=None, raw=None, sign=True, token=
 
 def _bare(value) -> str:
     """Text with placeholders removed: their 8 random hex characters can contain "4111" by chance."""
-    from taskvault.vault import TOKEN_RE
+    from eurycleia.vault import TOKEN_RE
     return TOKEN_RE.sub("[[placeholder]]", value if isinstance(value, str) else json.dumps(value, default=str))
 
 
@@ -120,8 +120,8 @@ def test_ending_a_task_and_bad_requests(api):
 
 
 @pytest.mark.parametrize("headers,status", [
-    ({"x-taskvault-auth": None}, 401),                            # unsigned
-    ({"x-taskvault-auth": "0" * 64}, 401),                        # wrongly signed
+    ({"x-eurycleia-auth": None}, 401),                            # unsigned
+    ({"x-eurycleia-auth": "0" * 64}, 401),                        # wrongly signed
     ({"origin": "https://evil.example"}, 403),                    # a web page trying to reach it
     ({"host": "evil.example:8765"}, 421),                         # DNS rebinding
     ({"content-type": "text/plain"}, 415),                        # a simple cross-site form post
@@ -137,7 +137,7 @@ def test_the_token_never_travels_and_replies_are_signed(api):
     st, out, resp_headers, sent, reply = call(api, "POST", "/v1/tasks", {"template": "support_reply",
                                               "trusted": {"customer_id": 12}}, full=True)
     assert st == 200 and api.token not in json.dumps(sent)
-    assert resp_headers["x-taskvault-auth"] == response_mac(api.token, sent["x-taskvault-nonce"], 200, reply)
+    assert resp_headers["x-eurycleia-auth"] == response_mac(api.token, sent["x-eurycleia-nonce"], 200, reply)
     assert call(api, "POST", "/v1/tasks", {"template": "support_reply", "trusted": {}}, token="other-token")[0] == 401
 
 
@@ -148,10 +148,10 @@ def test_replayed_or_stale_requests_are_refused(api):
     assert call(api, "POST", "/v1/tasks", raw=body, sign=False, headers=h)[0] == 401          # same request again
     import time as _t
 
-    from taskvault.api import request_mac
+    from eurycleia.api import request_mac
     old = str(int(_t.time()) - 600)
-    stale = {"x-taskvault-time": old, "x-taskvault-nonce": "a" * 32,
-             "x-taskvault-auth": request_mac(api.token, "POST", "/v1/tasks", old, "a" * 32, body)}
+    stale = {"x-eurycleia-time": old, "x-eurycleia-nonce": "a" * 32,
+             "x-eurycleia-auth": request_mac(api.token, "POST", "/v1/tasks", old, "a" * 32, body)}
     assert call(api, "POST", "/v1/tasks", raw=body, sign=False, headers=stale)[0] == 401
     # a signature is tied to its path and body
     other = signed_headers(api.token, "POST", "/v1/tasks", b'{"template": "x"}')
@@ -169,7 +169,7 @@ def test_idle_connections_are_dropped_and_capped(monkeypatch):
     import socket
     import time as _t
 
-    from taskvault import api as api_mod
+    from eurycleia import api as api_mod
     monkeypatch.setattr(api_mod._Handler, "timeout", 1)
     monkeypatch.setattr(api_mod._Server, "max_connections", 5)
     srv = ApiServer(build_vault(remote_sinks(Policy.load(POLICY))), port=0).start()
@@ -198,7 +198,7 @@ def test_listens_on_this_computer_only(api):
 
 
 def test_remote_sink_outside_the_api_is_refused():
-    with pytest.raises(RuntimeError, match="taskvault api"):
+    with pytest.raises(RuntimeError, match="eurycleia api"):
         RemoteSink("email.send")(to="x")
 
 
@@ -278,7 +278,7 @@ def test_connection_file_refuses_links_and_live_servers(api, tmp_path):
     assert target.read_text() == "important"
     busy = tmp_path / "busy.json"
     busy.write_text(json.dumps({"url": "x", "token": "t", "pid": os.getppid()}))       # a live process
-    with pytest.raises(ApiError, match="another taskvault api"):
+    with pytest.raises(ApiError, match="another eurycleia api"):
         api.write_connection_file(busy)
     stale = tmp_path / "stale.json"
     stale.write_text(json.dumps({"url": "x", "token": "t", "pid": 2 ** 22 + 12345}))   # long gone

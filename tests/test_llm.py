@@ -7,8 +7,8 @@ import pytest
 from demo.__main__ import make_vault
 from demo.bench import SCENARIOS, GullibleModel, run_scenario
 from demo.world import World
-from taskvault.llm import AnthropicProvider, OpenAIProvider, ToolAgent, privileged_planner, quarantined_extractor
-from taskvault.planner import PlanError
+from eurycleia.llm import AnthropicProvider, OpenAIProvider, ToolAgent, privileged_planner, quarantined_extractor
+from eurycleia.planner import PlanError
 
 
 class Recorder:
@@ -37,7 +37,7 @@ def test_anthropic_tool_loop_runs_through_the_vault():
     url, body, headers = net.requests[2]
     assert url == "https://api.anthropic.com/v1/messages" and headers["x-api-key"] == "k"
     results = body["messages"][-1]["content"]
-    assert results[0]["is_error"] and "Blocked by taskvault" in results[0]["content"]
+    assert results[0]["is_error"] and "Blocked by eurycleia" in results[0]["content"]
     assert body["messages"][-2]["content"][0] == {"type": "text", "text": "Sending now."}   # assistant turn kept
     assert {t["name"] for t in net.requests[0][1]["tools"]} == {"get_customer", "get_doc", "send_email", "refund"}
     assert world.outbox == []
@@ -61,7 +61,7 @@ def test_openai_tool_loop():
 
 
 def test_ollama_uses_the_local_server_and_sends_no_key(monkeypatch):
-    from taskvault.llm import OllamaProvider
+    from eurycleia.llm import OllamaProvider
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     net = Recorder([{"choices": [{"message": {"content": "hi"}}]}])
     p = OllamaProvider(transport=net)
@@ -109,7 +109,7 @@ def test_benchmark_offline(sc):
 
 
 def test_gemini_tool_loop():
-    from taskvault.llm import GeminiProvider
+    from eurycleia.llm import GeminiProvider
 
     world = World()
     task = make_vault(world).start_task("support_reply", customer_id=12)
@@ -131,7 +131,7 @@ def test_gemini_tool_loop():
     assert names == {"get_customer", "get_doc", "send_email", "refund"}
     last = net.requests[2][1]["contents"]
     assert last[1]["parts"][1]["thoughtSignature"] == "sig1"                # the model's own turn is sent back as-is
-    assert "Blocked by taskvault" in last[-1]["parts"][0]["functionResponse"]["response"]["error"]
+    assert "Blocked by eurycleia" in last[-1]["parts"][0]["functionResponse"]["response"]["error"]
     assert world.outbox == []
     with pytest.raises(ValueError):
         GeminiProvider("../../evil", api_key="k", transport=net)
@@ -169,7 +169,7 @@ def test_planner_gives_up_after_retries():
 
 
 def test_extractor_none_means_the_action_is_skipped():
-    from taskvault.planner import Planner
+    from eurycleia.planner import Planner
     world = World()
     task = make_vault(world).start_task("support_reply_planned", customer_id=12, ticket_id="T-100")
     plan = [{"id": "c", "read": "crm.customer"}, {"id": "t", "read": "inbox.ticket"},
@@ -182,8 +182,8 @@ def test_extractor_none_means_the_action_is_skipped():
 
 
 def test_providers_wait_out_rate_limits_and_stop_on_quota():
-    from taskvault.llm import GeminiProvider, QuotaExhausted
-    from taskvault.webclient import ProviderError
+    from eurycleia.llm import GeminiProvider, QuotaExhausted
+    from eurycleia.webclient import ProviderError
     calls, waits = [], []
     ok = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
 
@@ -234,7 +234,7 @@ def test_providers_wait_out_rate_limits_and_stop_on_quota():
 def test_providers_need_a_key(monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    from taskvault.llm import GeminiProvider
+    from eurycleia.llm import GeminiProvider
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         AnthropicProvider("m")
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):

@@ -6,7 +6,7 @@ import urllib.parse
 
 import pytest
 
-from taskvault.connectors import (
+from eurycleia.connectors import (
     GoogleDriveConnector,
     HttpClient,
     HttpError,
@@ -19,7 +19,7 @@ from taskvault.connectors import (
     SQLConnector,
     SQLSink,
 )
-from taskvault.connectors.base import Response
+from eurycleia.connectors.base import Response
 
 
 class FakeHTTP:
@@ -162,7 +162,10 @@ def test_smtp_sink_uses_starttls():
         def __init__(self, host, port): self.tls = False
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def starttls(self): self.tls = True
+        def starttls(self, context=None):
+            import ssl
+            # the server's certificate must be checked (smtplib's default context doesn't)
+            self.tls = context is not None and context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
         def login(self, u, p): pass
         def send_message(self, m): sent.append((self.tls, m["To"], m["Subject"]))
 

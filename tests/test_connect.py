@@ -1,6 +1,6 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""`taskvault connect / report / enforce / watch / disconnect`."""
+"""`eurycleia connect / report / enforce / watch / disconnect`."""
 
 import json
 import os
@@ -12,8 +12,8 @@ import pytest
 import yaml
 
 from demo.__main__ import POLICY as _POLICY
-from taskvault.cli import main
-from taskvault.connect import MARK, ConnectError, connect, disconnect, report, set_mode
+from eurycleia.cli import main
+from eurycleia.connect import MARK, ConnectError, connect, disconnect, report, set_mode
 
 ROOT = Path(__file__).resolve().parent.parent
 POLICY = str(_POLICY)
@@ -22,7 +22,7 @@ FAKE = str(ROOT / "tests" / "fake_mcp_server.py")
 
 @pytest.fixture(autouse=True)
 def tv_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKVAULT_HOME", str(tmp_path / "tvhome"))
+    monkeypatch.setenv("EURYCLEIA_HOME", str(tmp_path / "tvhome"))
 
 
 def claude_config(tmp_path):
@@ -45,7 +45,7 @@ def test_connect_wraps_servers_in_watch_mode_and_disconnect_restores_them(tmp_pa
     assert crm["args"][crm["args"].index("--") + 1:] == [sys.executable, FAKE]      # original command kept
     assert crm["env"] == {"X": "1"} and data["otherSetting"] is True                # nothing else touched
     assert data["mcpServers"]["files"] == original["mcpServers"]["files"]           # only the chosen server
-    assert (tmp_path / "claude_desktop_config.json.taskvault-backup").exists()
+    assert (tmp_path / "claude_desktop_config.json.eurycleia-backup").exists()
     assert connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(cfg),
                    servers=["crm"]) == ["crm"]                                        # connecting twice is harmless
     assert json.loads(cfg.read_text())["mcpServers"]["crm"]["args"].count(MARK) == 1
@@ -117,7 +117,7 @@ def test_cli_flow(tmp_path, capsys):
     assert main(["connect", "mcp-json", "--config", str(cfg), "--policy", POLICY, "--task", "support_reply",
                  "--trusted", "customer_id=12", "--server", "crm"]) == 0
     out = capsys.readouterr().out
-    assert "WATCH" in out and "taskvault report" in out
+    assert "WATCH" in out and "eurycleia report" in out
     assert main(["report"]) == 0 and "watch mode" in capsys.readouterr().out
     assert main(["enforce"]) == 0 and "enforcing on 1" in capsys.readouterr().out
     assert main(["disconnect"]) == 0 and "restored 1" in capsys.readouterr().out

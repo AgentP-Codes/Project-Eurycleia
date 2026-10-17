@@ -24,7 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from taskvault import AuditLog, Blocked, Policy, Vault
+from eurycleia import AuditLog, Blocked, Policy, Vault
 
 from .__main__ import POLICY
 from .world import World
@@ -101,7 +101,7 @@ def main() -> int:
         print(f"  {name:<52} {value:>14}  {note}", flush=True)
 
     tmp = Path(tempfile.mkdtemp(prefix="tv-stress-"))
-    print("taskvault stress test (SIMULATED data)\n")
+    print("eurycleia stress test (SIMULATED data)\n")
 
     # 1. single-thread throughput and latency
     n = 300 if q else 3000
@@ -162,8 +162,8 @@ def main() -> int:
 
     # 5. deposit boxes: concurrent writers
     try:
-        from taskvault.boxes import BoxDB, BoxStore
-        from taskvault.crypto import LocalKeyProvider
+        from eurycleia.boxes import BoxDB, BoxStore
+        from eurycleia.crypto import LocalKeyProvider
         n, threads = (200, 4) if q else (2000, 16)
         keys = LocalKeyProvider(tmp / "v.key")
         errors = []
@@ -193,8 +193,8 @@ def main() -> int:
     # 6. local API (other languages): many tasks at once, actions run by the "app", attacks blocked
     import http.client
 
-    from taskvault.api import ApiServer, remote_sinks, signed_headers
-    from taskvault.vault import TOKEN_RE
+    from eurycleia.api import ApiServer, remote_sinks, signed_headers
+    from eurycleia.vault import TOKEN_RE
 
     from .api_app import build_vault
 
@@ -251,12 +251,12 @@ def main() -> int:
         w = csv.writer(f)
         w.writerow(["id", "name", "email", "card_number"])
         w.writerows([i, f"Person {i}", f"p{i}@example.com", "4111 1111 1111 1111"] for i in range(n))
-    from taskvault.cli import main as cli
+    from eurycleia.cli import main as cli
     out = tmp / "setup"
     t0 = time.perf_counter()
     rc = cli(["setup", "--sqlite", str(db), "--file", str(csv_path), "--dir", str(out), "--domain", "acme.example"])
     report(f"setup scan: {n:,}-row table + {n:,}-row CSV", f"{time.perf_counter() - t0:,.1f} s", f"exit {rc}")
-    policy = (out / "taskvault.yaml").read_text()
+    policy = (out / "eurycleia.yaml").read_text()
     assert rc == 0 and "card_number\": secret" in policy and "tfn\": secret" in policy
 
     print(f"\nall stress checks passed. Temporary files: {tmp}")

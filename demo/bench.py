@@ -30,8 +30,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from taskvault import AuditLog, Blocked, Policy, Vault
-from taskvault.llm import (
+from eurycleia import AuditLog, Blocked, Policy, Vault
+from eurycleia.llm import (
     AnthropicProvider,
     GeminiProvider,
     OllamaProvider,
@@ -41,7 +41,7 @@ from taskvault.llm import (
     privileged_planner,
     quarantined_extractor,
 )
-from taskvault.planner import PlanError, Planner
+from eurycleia.planner import PlanError, Planner
 
 from .__main__ import POLICY
 from .world import TICKETS, World
@@ -239,8 +239,27 @@ class GullibleModel:
 
 
 # ------------------------------------------------------------------------ runs
+PSEUDONYMS = False      # --pseudonyms: the model sees stand-ins for the customer's name and contact details
+PSEUDONYM_NOTE = (" Customers' names and contact details appear as stand-ins like Name-1A2B3C or "
+                  "email-1a2b3c@pseudonym.invalid; use them exactly as given, and the real ones are filled in when "
+                  "the email is sent.")
+
+
+def _system() -> str:
+    return SYSTEM + (PSEUDONYM_NOTE if PSEUDONYMS else "")
+
+
+def _policy() -> Policy:
+    policy = Policy.load(POLICY)
+    if PSEUDONYMS:
+        raw = policy.raw
+        raw["sources"]["crm.customer"]["pseudonymize"] = ["name", "email", "phone", "address"]
+        policy = Policy.from_dict(raw)
+    return policy
+
+
 def _vault(world: World, audit: AuditLog | None = None) -> Vault:
-    return Vault(Policy.load(POLICY),
+    return Vault(_policy(),
                  {"crm.customer": world.get_customer, "docs": world.get_doc, "inbox.ticket": world.get_ticket},
                  {"email.send": world.send_email, "payments.refund": world.refund}, audit=audit)
 
@@ -254,7 +273,7 @@ def run_scenario(provider: Any, sc: Scenario, config: str) -> dict[str, Any]:
         if config == "no-vault":
             ToolAgent(provider, system=SYSTEM)(RawTask(world), inputs)
         elif config == "vault":
-            ToolAgent(provider, system=SYSTEM)(_vault(world).start_task("support_reply", customer_id=12), inputs)
+            ToolAgent(provider, system=_system())(_vault(world).start_task("support_reply", customer_id=12), inputs)
         else:
             import demo.world as dw
             dw.TICKETS["BENCH"] = {"verified_customer_id": 12, "body": sc.ticket}
@@ -276,17 +295,38 @@ def run_scenario(provider: Any, sc: Scenario, config: str) -> dict[str, Any]:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--provider", choices=["fake", "anthropic", "openai", "gemini", "ollama"], default="fake")
+    p.add_argument("--provider", choices=["fake", "anthropic", "openai", "gemini", "openrouter", "ollama"],
+                   default="fake")
     p.add_argument("--model", default=None)
     p.add_argument("--configs", default="no-vault,vault,planner")
+    p.add_argument("--pseudonyms", action="store_true",
+                   help="the model sees stand-ins (Name-A1B2C3) for the customer's name, email, phone and address")
     p.add_argument("--runs", type=int, default=1, help="repeat each scenario (real models vary)")
     p.add_argument("--out", default=None, help="save every result to this JSON file")
     p.add_argument("--scenarios", default=None, help="comma-separated scenario names (default: all)")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--budget-aud", type=float, default=5.0,
+                   help="stop when this run has cost this much (A$, estimated from the tokens used; default 5)")
+    p.add_argument("--price-in", type=float, default=None, help="US$ per million input tokens (unlisted models)")
+    p.add_argument("--price-out", type=float, default=None, help="US$ per million output tokens (unlisted models)")
     a = p.parse_args()
-    provider = {"fake": lambda: GullibleModel(), "anthropic": lambda: AnthropicProvider(a.model),
+    global PSEUDONYMS
+    PSEUDONYMS = a.pseudonyms
+    from eurycleia.llm import OpenRouterProvider
+
+    from .pricing import BudgetExceeded, Meter, UnknownPrice
+    provider = {"fake": lambda: GullibleModel(),
+                "anthropic": lambda: AnthropicProvider(a.model, cache=True),
                 "openai": lambda: OpenAIProvider(a.model), "gemini": lambda: GeminiProvider(a.model),
+                "openrouter": lambda: OpenRouterProvider(a.model),
                 "ollama": lambda: OllamaProvider(a.model)}[a.provider]()
+    meter = None
+    if a.provider not in ("fake", "ollama"):
+        try:
+            meter = Meter(provider.model, a.budget_aud, a.price_in, a.price_out)
+        except UnknownPrice as e:
+            p.error(str(e))
+        provider.on_usage = meter.hook
     configs = a.configs.split(",")
     wanted = [x.strip() for x in a.scenarios.split(",")] if a.scenarios else None
     scenarios = [sc for sc in SCENARIOS if not wanted or sc.name in wanted]
@@ -305,6 +345,10 @@ def main() -> None:
                     print(f"\nStopped: {e}\nThe results so far are saved; try again tomorrow or with a paid key.")
                     stopped = True
                     break
+                except BudgetExceeded as e:
+                    print(f"\nStopped: {e}\nThe results so far are saved; raise --budget-aud to go further.")
+                    stopped = True
+                    break
                 except Exception as e:  # noqa: BLE001 - an API error shouldn't lose the other results
                     r = {"scenario": sc.name, "config": c, "utility": False, "attack_succeeded": False,
                          "leaks": [], "error": f"{type(e).__name__}: {e}"}
@@ -317,7 +361,10 @@ def main() -> None:
     model = getattr(provider, "model", a.provider)
     if a.out:
         with open(a.out, "w") as f:
-            json.dump({"provider": a.provider, "model": model, "runs": a.runs, "results": rows}, f, indent=2)
+            json.dump({"provider": a.provider, "model": model, "runs": a.runs, "pseudonyms": a.pseudonyms,
+                       "results": rows,
+                       "cost_aud": round(meter.spent_aud, 4) if meter else 0,
+                       "tokens": meter.tokens if meter else {}}, f, indent=2)
     if a.json:
         print(json.dumps(rows, indent=2))
         return
@@ -343,6 +390,8 @@ def main() -> None:
         print(f"{c:<10} utility {sum(r['utility'] for r in rs)}/{len(rs)}   "
               f"attacks succeeded {sum(r['attack_succeeded'] for r in inj)}/{len(inj)}"
               + (f"   errors {errs}" if errs else ""))
+    if meter:
+        print("\ncost (estimated from the tokens the provider reported): " + meter.summary())
 
 
 if __name__ == "__main__":

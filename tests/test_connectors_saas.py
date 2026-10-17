@@ -14,9 +14,9 @@ import urllib.parse
 
 import pytest
 
-from taskvault.connectors import HttpClient, HttpError
-from taskvault.connectors.base import Response
-from taskvault.connectors.saas import (
+from eurycleia.connectors import HttpClient, HttpError
+from eurycleia.connectors.base import Response
+from eurycleia.connectors.saas import (
     GmailSink,
     HubSpotConnector,
     HubSpotSink,
@@ -218,7 +218,7 @@ def test_mongo_reads_one_document_and_cant_be_tricked_into_a_query():
 # ---- a connector behind the vault ----------------------------------------------------------
 
 def test_slack_behind_the_vault_only_reaches_allowed_channels():
-    from taskvault import Blocked, Policy, Vault
+    from eurycleia import Blocked, Policy, Vault
     c, fake = client("https://slack.com", {("POST", "/api/chat.postMessage"): (200, {"ok": True})})
     pol = Policy.from_dict({
         "sources": {"notes": {"owner": "company", "fields": {"text": "normal"}}},

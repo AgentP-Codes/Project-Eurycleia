@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Demo vault for the language adapters (SIMULATED data).
 
-    taskvault api --policy demo/policy.yaml --app demo.api_app:build_vault
+    eurycleia api --policy demo/policy.yaml --app demo.api_app:build_vault
 
 Customer records, documents and tickets come from the simulated world. The actions (email.send,
 payments.refund) are run by the connected app itself, in its own language, through the adapter.
 """
 
-from taskvault import AuditLog, Policy, Vault
+from eurycleia import AuditLog, Policy, Vault
 
 from .__main__ import POLICY
 from .world import World

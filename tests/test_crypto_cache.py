@@ -7,9 +7,9 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import World
-from taskvault import Blocked, Policy, Vault
-from taskvault.cache import EncryptedCache
-from taskvault.crypto import Cipher, KeyError_, KMSKeyProvider, LocalKeyProvider
+from eurycleia import Blocked, Policy, Vault
+from eurycleia.cache import EncryptedCache
+from eurycleia.crypto import Cipher, KeyError_, KMSKeyProvider, LocalKeyProvider
 
 
 class FakeKMS:
@@ -155,7 +155,7 @@ def test_approval_required_fails_closed_without_an_approver():
 
 
 def _audit_writer(path, n):
-    from taskvault.audit import AuditLog
+    from eurycleia.audit import AuditLog
     log = AuditLog(path)
     for i in range(n):
         log.record("act", i=i, pid=__import__("os").getpid())
@@ -165,7 +165,7 @@ def test_several_processes_can_share_one_audit_file(tmp_path):
     """Found by the stress test: separate processes appending to one file must keep one valid chain."""
     import multiprocessing as mp
 
-    from taskvault.audit import AuditLog
+    from eurycleia.audit import AuditLog
     path = str(tmp_path / "shared.jsonl")
     procs = [mp.get_context("spawn").Process(target=_audit_writer, args=(path, 150)) for _ in range(4)]
     for p in procs:

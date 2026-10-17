@@ -1,4 +1,4 @@
-# Everything CI needs to test taskvault. Locked with checksums in ci.lock.
+# Everything CI needs to test eurycleia. Locked with checksums in ci.lock.
 -r runtime.in
 pytest>=8
 ruff>=0.5

@@ -1,6 +1,6 @@
 // Copyright 2026 AgentP-Codes
 // SPDX-License-Identifier: Apache-2.0
-// Runs against a real `taskvault api` with the simulated demo data. From the repo root:
+// Runs against a real `eurycleia api` with the simulated demo data. From the repo root:
 //   node --test adapters/typescript/test/api.test.js
 
 import { test, before, after } from "node:test";
@@ -10,7 +10,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TaskVault, TaskVaultError } from "../index.js";
+import { Eurycleia, EurycleiaError } from "../index.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const PY = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -19,19 +19,19 @@ let server, info;
 before(async () => {
   const dir = await mkdtemp(join(tmpdir(), "tv-ts-"));
   const conn = join(dir, "api.json");
-  server = spawn(PY, ["-m", "taskvault", "api", "--policy", "demo/policy.yaml", "--app",
+  server = spawn(PY, ["-m", "eurycleia", "api", "--policy", "demo/policy.yaml", "--app",
     "demo.api_app:build_vault", "--port", "0", "--connection-file", conn], { cwd: ROOT, stdio: "ignore" });
   for (let i = 0; i < 100 && !info; i++) {
     await new Promise((r) => setTimeout(r, 100));
     info = await readFile(conn, "utf8").then(JSON.parse).catch(() => undefined);
   }
-  assert.ok(info, "taskvault api didn't start");
+  assert.ok(info, "eurycleia api didn't start");
 });
 
 after(() => server?.kill());
 
 function connect() {
-  return new TaskVault({ url: info.url, token: info.token });
+  return new Eurycleia({ url: info.url, token: info.token });
 }
 
 test("a scripted agent: reads with placeholders, refund runs in JS with the real card, attack blocked", async () => {
@@ -40,7 +40,7 @@ test("a scripted agent: reads with placeholders, refund runs in JS with the real
   const tv = connect()
     .onAction("payments.refund", async ({ card, amount }) => {
       refunds.push({ card, amount });
-      return { ok: true, charged_to: card };                 // echoing the card: taskvault must mask it
+      return { ok: true, charged_to: card };                 // echoing the card: eurycleia must mask it
     })
     .onAction("email.send", async (args) => {
       emails.push(args);
@@ -65,7 +65,7 @@ test("a scripted agent: reads with placeholders, refund runs in JS with the real
   assert.equal(attack.blocked, true);
   assert.equal(emails.length, 0);                                     // the handler never ran
   assert.match(await task.callForModel("send_email", { to: "audit@acme-billing.example", subject: "x", body: "y" }),
-    /^Blocked by taskvault: /);
+    /^Blocked by eurycleia: /);
 
   const ok = await task.call("send_email", { to: customer.email, subject: "Refund", body: "Done!" });
   assert.equal(ok.ok, true);
@@ -106,9 +106,9 @@ test("framework helpers", async () => {
 });
 
 test("safety: local only, token required, token never printed", async () => {
-  assert.throws(() => new TaskVault({ url: "http://example.com:8765", token: "t" }), TaskVaultError);
-  assert.throws(() => new TaskVault({ url: "https://127.0.0.1:1", token: "t" }), TaskVaultError);
-  const bad = new TaskVault({ url: info.url, token: "wrong" });
+  assert.throws(() => new Eurycleia({ url: "http://example.com:8765", token: "t" }), EurycleiaError);
+  assert.throws(() => new Eurycleia({ url: "https://127.0.0.1:1", token: "t" }), EurycleiaError);
+  const bad = new Eurycleia({ url: info.url, token: "wrong" });
   await assert.rejects(bad.startTask("support_reply", { customer_id: 12 }), (e) => e.status === 401);
   const tv = connect();
   assert.ok(!String(tv).includes(info.token) && !JSON.stringify(tv).includes(info.token));
@@ -116,15 +116,15 @@ test("safety: local only, token required, token never printed", async () => {
 });
 
 test("connect() finds the running server from the environment", async () => {
-  process.env.TASKVAULT_URL = info.url;
-  process.env.TASKVAULT_TOKEN = info.token;
+  process.env.EURYCLEIA_URL = info.url;
+  process.env.EURYCLEIA_TOKEN = info.token;
   try {
-    const tv = await TaskVault.connect();
+    const tv = await Eurycleia.connect();
     const task = await tv.startTask("support_reply", { customer_id: 45 });
     assert.equal((await task.call("get_customer")).result.name, "Tom Nguyen");
   } finally {
-    delete process.env.TASKVAULT_URL;
-    delete process.env.TASKVAULT_TOKEN;
+    delete process.env.EURYCLEIA_URL;
+    delete process.env.EURYCLEIA_TOKEN;
   }
 });
 
@@ -139,10 +139,10 @@ test("an impostor on the port gets no token and can't trigger actions", async ()
   });
   await new Promise((r) => fake.listen(0, "127.0.0.1", r));
   const ran = [];
-  const tv = new TaskVault({ url: `http://127.0.0.1:${fake.address().port}`, token: info.token })
+  const tv = new Eurycleia({ url: `http://127.0.0.1:${fake.address().port}`, token: info.token })
     .onAction("payments.refund", (a) => ran.push(a));
   try {
-    await assert.rejects(tv.startTask("support_reply", { customer_id: 12 }), /couldn't prove it is taskvault/);
+    await assert.rejects(tv.startTask("support_reply", { customer_id: 12 }), /couldn't prove it is eurycleia/);
     assert.equal(ran.length, 0);
     assert.ok(!JSON.stringify(seen).includes(info.token));          // the token itself never travelled
   } finally {

@@ -15,11 +15,11 @@ import yaml
 
 from demo.__main__ import POLICY, make_vault
 from demo.world import World
-from taskvault import detect
-from taskvault.attacks import lint
-from taskvault.mcp import ProxyServer
-from taskvault.policy import Policy
-from taskvault.vault import LOOSE_TOKEN_RE, Blocked, Vault, _glob, _matches, _norm_pattern, _urls
+from eurycleia import detect
+from eurycleia.attacks import lint
+from eurycleia.mcp import ProxyServer
+from eurycleia.policy import Policy
+from eurycleia.vault import LOOSE_TOKEN_RE, Blocked, Vault, _glob, _matches, _norm_pattern, _urls
 
 from .test_api import api, call  # noqa: F401 - the local API fixture
 
@@ -172,14 +172,14 @@ def test_other_digit_scripts_do_not_crash_the_scanner(text):
 
 def test_full_width_card_is_hidden():
     out = detect.redact_secrets("card " + _wide(CARD))
-    assert "removed by taskvault" in out and _wide("4") not in out
+    assert "removed by eurycleia" in out and _wide("4") not in out
 
 
 @pytest.mark.parametrize("day", range(1, 29))
 def test_a_card_followed_by_a_date_is_hidden_whole(day):
     for month in range(1, 13):
         text = f"Paid with 4111 1111 1111 1111 2025-{month:02d}-{day:02d} $42.00"
-        assert detect.redact_secrets(text).startswith("Paid with [card_number removed by taskvault] 2025-"), text
+        assert detect.redact_secrets(text).startswith("Paid with [card_number removed by eurycleia] 2025-"), text
 
 
 def test_flag_handlers_run_outside_the_task_lock():

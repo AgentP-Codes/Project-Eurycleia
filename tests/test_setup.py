@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from taskvault import Blocked, Policy
-from taskvault.cli import main
-from taskvault.detect import classify_column, classify_document, detect_value, redact
-from taskvault.setup import classify_tool, run_setup, scan_mcp
+from eurycleia import Blocked, Policy
+from eurycleia.cli import main
+from eurycleia.detect import classify_column, classify_document, detect_value, redact
+from eurycleia.setup import classify_tool, run_setup, scan_mcp
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -69,7 +69,7 @@ def test_setup_writes_a_working_policy_without_copying_real_data(company):
     out = company / "out"
     assert run_setup(out, sqlite=[str(company / "crm.db")], files=[str(company / "suppliers.csv")],
                      docs=[str(company / "docs")], domain="acme.example", echo=lambda s: None) == 0
-    policy = Policy.load(out / "taskvault.yaml")
+    policy = Policy.load(out / "eurycleia.yaml")
     cust = policy.sources["db.customers"]
     assert cust.owner == "customer_id" and cust.owner_contact == "email"
     assert cust.fields["card_number"] == "secret" and cust.fields["email"] == "protected"
@@ -77,12 +77,12 @@ def test_setup_writes_a_working_policy_without_copying_real_data(company):
     assert policy.sources["db.orders"].owner_field == "customer_id"
     assert policy.sources["file.suppliers"].fields["bsb_account"] == "secret"
     assert policy.sources["docs.docs"].key_levels == {"pricing": "protected", "refund_policy": "normal"}
-    for f in ("taskvault.yaml", "fixtures.yaml", "setup-report.md"):
+    for f in ("eurycleia.yaml", "fixtures.yaml", "setup-report.md"):
         text = (out / f).read_text()
         assert "Priya" not in text and "priya@" not in text and "0400 111 222" not in text
 
     # the generated connector code works against the real database
-    spec = importlib.util.spec_from_file_location("tv_app", out / "taskvault_app.py")
+    spec = importlib.util.spec_from_file_location("tv_app", out / "eurycleia_app.py")
     app = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(app)
     sent = []
@@ -116,7 +116,7 @@ def test_setup_cli_and_mcp_scan(company, capsys):
     assert tools["refund"].role == "act" and tools["refund"].risk == "high"
     assert main(["setup", "--sqlite", str(company / "crm.db"), "--dir", str(company / "o2"), "--domain",
                  "acme.example", "--", *fake]) == 0
-    policy = Policy.load(company / "o2" / "taskvault.yaml")
+    policy = Policy.load(company / "o2" / "eurycleia.yaml")
     assert policy.tasks["customer_request"].sinks["mcp.refund"].approval == "always"   # high risk -> approval
     assert "attack suite" in capsys.readouterr().out
 
@@ -149,8 +149,8 @@ def test_setup_scans_a_real_postgres_database(tmp_path, pg_url):
         c.execute("INSERT INTO orders VALUES (10,1,'49.00'),(11,2,'19.00')")
     out = tmp_path / "out"
     assert run_setup(out, postgres=[uri], domain="acme.example", echo=lambda s: None) == 0
-    policy = Policy.load(out / "taskvault.yaml")
+    policy = Policy.load(out / "eurycleia.yaml")
     assert policy.sources["db.customers"].fields["card_number"] == "secret"
     assert policy.sources["db.customers"].owner_contact == "email"
     assert policy.sources["db.orders"].owner_field == "customer_id"
-    assert "Priya" not in (out / "taskvault.yaml").read_text()
+    assert "Priya" not in (out / "eurycleia.yaml").read_text()

@@ -6,9 +6,9 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import ATTACKER, World
-from taskvault import AuditLog, Blocked, Policy, PolicyError, Vault
-from taskvault.crypto import Cipher, LocalKeyProvider
-from taskvault.planner import Planner
+from eurycleia import AuditLog, Blocked, Policy, PolicyError, Vault
+from eurycleia.crypto import Cipher, LocalKeyProvider
+from eurycleia.planner import Planner
 
 
 def _vault(world, policy=None, **kw):
@@ -125,7 +125,7 @@ def test_outbound_detection_catches_secrets_the_vault_never_saw():
 # ---- CLI --------------------------------------------------------------------------------
 
 def test_cli_review_lists_flagged_actions(tmp_path, capsys):
-    from taskvault.cli import main
+    from eurycleia.cli import main
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path)
     log.record("flag", task=1, sink="email.send", reasons=["medium-risk action"], decision="flag")

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from taskvault import AuditLog, Policy, Vault
+from eurycleia import AuditLog, Policy, Vault
 
 from .agents import HijackedAgent, LegitAgent, RawTools, VaultTools
 from .world import TICKETS, World

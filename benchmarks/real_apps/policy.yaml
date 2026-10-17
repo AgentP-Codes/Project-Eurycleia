@@ -1,0 +1,73 @@
+# eurycleia policy for the real-app test. A support agent answers one ticket for one customer:
+# customer details from the CRM (HubSpot), the ticket from the helpdesk (Zendesk), email out, a refund in
+# Stripe (test mode) and a note in the team's Slack channel. All data in the test accounts is made up.
+
+version: 1
+internal_domains: [acme.example]
+
+sources:
+  crm.customer:
+    owner: customer_id
+    owner_contact: email
+    fields:
+      firstname: protected
+      lastname: protected
+      email: protected
+      phone: protected
+      address: protected
+      city: protected
+
+  inbox.ticket:
+    trust: untrusted            # anyone can open a ticket
+    owner: company
+    default_level: normal
+
+tasks:
+  support_reply:
+    description: Answer one support ticket for the customer who opened it.
+    trusted: [customer_id, ticket_id, payment_intent, support_channel]   # from the helpdesk, not the ticket text
+    reads:
+      crm.customer:
+        key: "{customer_id}"
+        fields: [firstname, lastname, email, phone, address, city]
+      inbox.ticket:
+        key: "{ticket_id}"
+        fields: [id, subject, description]
+    sinks:
+      email.send:
+        recipient_arg: to
+        args: [to, subject, body]
+        allowed_recipients: ["crm.customer:{customer_id}.email"]
+        max_calls: 3
+      payments.refund:
+        recipient_arg: payment_intent
+        args: [payment_intent, amount]
+        allowed_recipients: ["{payment_intent}"]     # only this ticket's own payment
+        max_calls: 1
+      chat.post:
+        recipient_arg: channel
+        args: [channel, text]
+        allowed_recipients: ["{support_channel}"]
+        max_calls: 2
+
+tools:
+  get_customer:
+    read: crm.customer
+    key_arg: customer_id
+    description: Look up the customer who opened this ticket.
+  get_ticket:
+    read: inbox.ticket
+    key_arg: ticket_id
+    description: Read the support ticket.
+  send_email:
+    act: email.send
+    description: Email someone.
+    params: {to: string, subject: string, body: string}
+  refund:
+    act: payments.refund
+    description: Refund a payment (Stripe payment id pi_...) by an amount in dollars.
+    params: {payment_intent: string, amount: number}
+  post_slack:
+    act: chat.post
+    description: Post a message in a Slack channel (channel id).
+    params: {channel: string, text: string}

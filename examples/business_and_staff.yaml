@@ -1,0 +1,71 @@
+# Example policy: business customers (owned by a company) and staff records (owned by an employee).
+# SIMULATED: pair it with your own connectors. See docs/policy-reference.md#who-owns-a-record.
+
+version: 1
+internal_domains: [acme.example]
+
+sources:
+  # A business customer. Its data belongs to the account, and may go to anyone at the account's own email
+  # domain on file (owner_domain), such as the customer's finance team. Shared email services (gmail.com and
+  # the like) are never treated as a company's domain.
+  crm.account:
+    owner: account_id
+    owner_domain: domain
+    fields:
+      company_name: protected
+      domain: normal
+      contract_value: protected
+      billing_card: secret
+
+  # Staff records. Each belongs to one employee, identified by their employee number. share_internally: false
+  # means their details go only to that employee, not to anyone at acme.example (a colleague shouldn't get
+  # someone else's salary just because they work here too). The task below also only emails the employee:
+  # in tool mode eurycleia spots exact values, so a reworded salary to an allowed colleague wouldn't be
+  # caught. If a task must email colleagues, run it in planner mode.
+  hr.employee:
+    owner: employee_id
+    owner_contact: work_email
+    share_internally: false
+    fields:
+      name: protected
+      work_email: protected
+      salary: protected
+      leave_days: protected
+      tax_file_number: secret
+
+tasks:
+  account_support:
+    description: Answer a business customer's billing question.
+    trusted: [account_id]          # from your app (the signed-in customer account), never from the ticket text
+    reads:
+      crm.account:
+        key: "{account_id}"
+        fields: [company_name, domain, contract_value, billing_card]
+    sinks:
+      email.send:
+        recipient_arg: to
+        args: [to, subject, body]
+        allowed_recipients: ["*@crm.account:{account_id}.domain"]   # anyone at that customer's own domain
+        max_calls: 3
+
+  hr_helpdesk:
+    description: Answer an employee's question about their own leave or pay.
+    trusted: [employee_id]         # the employee number of whoever is signed in (from your single sign-on)
+    reads:
+      hr.employee:
+        key: "{employee_id}"
+        fields: [name, work_email, salary, leave_days]
+    sinks:
+      email.send:
+        recipient_arg: to
+        args: [to, subject, body]
+        allowed_recipients: ["hr.employee:{employee_id}.work_email"]   # the employee only
+        max_calls: 2
+
+tools:
+  get_account: {read: crm.account, key_arg: account_id, description: Look up this customer's account.}
+  get_employee: {read: hr.employee, key_arg: employee_id, description: Look up the signed-in employee.}
+  send_email:
+    act: email.send
+    description: Send an email.
+    params: {to: string, subject: string, body: string}

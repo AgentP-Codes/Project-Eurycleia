@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "acme-support": {
-      "command": "taskvault",
+      "command": "eurycleia",
       "args": [
         "serve",
-        "--policy", "/path/to/taskvault.yaml",
+        "--policy", "/path/to/eurycleia.yaml",
         "--task", "support_reply",
         "--trusted", "customer_id=12",
         "--audit", "/path/to/audit.jsonl",

@@ -10,7 +10,7 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import World
-from taskvault import Blocked, Policy, PolicyError, SinkError, Vault
+from eurycleia import Blocked, Policy, PolicyError, SinkError, Vault
 
 NOTES = ("VIP. Prefers phone 0400 999 888 or priya.personal@gmail.example. Old card 5555 5555 5555 4444, "
          "tfn 123 456 782. Priya Shah asked us to call after 5pm.")

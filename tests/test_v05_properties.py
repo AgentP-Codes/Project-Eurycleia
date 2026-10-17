@@ -12,8 +12,8 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import World
-from taskvault import Blocked, Policy, SinkError, Vault
-from taskvault.derive import compute
+from eurycleia import Blocked, Policy, SinkError, Vault
+from eurycleia.derive import compute
 
 CARD = "4111 1111 1111 1111"
 EMAIL = "priya.shah@example.com"
@@ -22,7 +22,7 @@ NOTES = "Call 0400 999 888 or priya.personal@gmail.example; card 5555 5555 5555 
 
 def _bare(value) -> str:
     """Text with placeholders removed: their 8 random hex characters can contain "4111" by chance."""
-    from taskvault.vault import TOKEN_RE
+    from eurycleia.vault import TOKEN_RE
     return TOKEN_RE.sub("[[placeholder]]", value if isinstance(value, str) else json.dumps(value, default=str))
 
 
@@ -317,7 +317,7 @@ def test_api_exec_result_variants_masked(api):  # noqa: F811
 
 def test_box_secret_opened_earlier_is_masked_in_later_results(tmp_path):
     """A card from a deposit box, opened for an approved refund, is masked if a later action echoes it."""
-    from taskvault.crypto import LocalKeyProvider
+    from eurycleia.crypto import LocalKeyProvider
     from tests.test_boxes import _vault_on_boxes
     vault, world = _vault_on_boxes(str(tmp_path / "b.db"), LocalKeyProvider(tmp_path / "v.key"))
     vault.sinks["email.send"] = lambda **a: {"note": "card on file 4111-1111-1111-1111"}
@@ -338,7 +338,7 @@ def test_secrets_the_task_never_saw_are_removed_from_results():
     t = v.start_task("support_reply", customer_id=12)
     c = t.read("crm.customer")
     out = json.dumps(t.act("email.send", to=c["email"], subject="s", body="b"))
-    assert "5566" not in _bare(out) and "12345678" not in _bare(out) and "card_number removed by taskvault" in out
+    assert "5566" not in _bare(out) and "12345678" not in _bare(out) and "card_number removed by eurycleia" in out
     assert v.audit.entries[-1]["event"] == "sink.result_redacted" or \
         any(e["event"] == "sink.result_redacted" for e in v.audit.entries)
     assert not any(c in json.dumps(v.audit.entries) for c in ("4000 0566", "4000056655665556", "4000-0566"))
@@ -374,7 +374,7 @@ def _nested(draw, leaf):
     if kind == 1:
         return [draw(_WORDS), leaf]
     if kind == 2:
-        return {leaf: draw(st.integers())}
+        return {leaf: draw(st.integers().filter(lambda n: "4111" not in str(n)))}   # filler can't look like the card
     return {"a": [{"b": leaf}]}
 
 
@@ -394,12 +394,12 @@ def test_masking_catches_reformatted_cards_anywhere(data):
 def test_the_second_net_never_touches_placeholders():
     """Found in the final load test: a placeholder whose 8 random characters were all digits passing the
     tax-file-number checksum was partly "removed", breaking it for the model's next step."""
-    from taskvault.detect import redact_secrets
-    from taskvault.vault import TOKEN_RE
+    from eurycleia.detect import redact_secrets
+    from eurycleia.vault import TOKEN_RE
     found = set()
     for hexpart in ("00000021", "00000042", "00000063", "12345678", "87654321", "abcdef01"):   # first 3 look like TFNs
         token = f"[[vault:card_number:{hexpart}]]"
         text = f"refunded to {token} ok"
         assert redact_secrets(text, found) == text and TOKEN_RE.search(redact_secrets({"card": token}, found)["card"])
     assert not found
-    assert "removed by taskvault" in redact_secrets("tfn 123 456 782 and [[vault:x:12345678]]")
+    assert "removed by eurycleia" in redact_secrets("tfn 123 456 782 and [[vault:x:12345678]]")

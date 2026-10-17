@@ -14,13 +14,13 @@ export type CallResult =
 
 export type ActionHandler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
-export class TaskVaultError extends Error {
+export class EurycleiaError extends Error {
   status: number;
 }
 
-export class TaskVault {
+export class Eurycleia {
   constructor(options: { url: string; token: string; timeoutMs?: number });
-  static connect(options?: { timeoutMs?: number }): Promise<TaskVault>;
+  static connect(options?: { timeoutMs?: number }): Promise<Eurycleia>;
   /** Run an approved action in your code. `args` holds REAL values: don't log them or give them to the model. */
   onAction(sink: string, handler: ActionHandler): this;
   /** `trusted` must come from your app (e.g. the logged-in customer), never from the model. */

@@ -1,13 +1,14 @@
 // Copyright 2026 AgentP-Codes
 // SPDX-License-Identifier: Apache-2.0
 //
-// taskvault for TypeScript / JavaScript agents. No dependencies: Node 18+ built-ins only.
+// eurycleia for TypeScript / JavaScript agents. No dependencies: Node 18+ built-ins only.
 //
-// A thin client for `taskvault api` running on the same computer. Every check, placeholder, pseudonym,
-// audit entry and block happens in taskvault itself; this file only carries requests and runs the
-// actions (email, refunds, ...) that taskvault has approved, using handlers you register.
+// A thin client for `eurycleia api` running on the same computer. Every check, placeholder, pseudonym,
+// audit entry and block happens in eurycleia itself; this file only carries requests and runs the
+// actions (email, refunds, ...) that eurycleia has approved, using handlers you register.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,57 +16,59 @@ import { join } from "node:path";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
-/** Thrown when taskvault can't be reached or rejects a request (not for blocked actions: see CallResult). */
-export class TaskVaultError extends Error {
+/** Thrown when eurycleia can't be reached or rejects a request (not for blocked actions: see CallResult). */
+export class EurycleiaError extends Error {
   constructor(message, status = 0) {
     super(message);
-    this.name = "TaskVaultError";
+    this.name = "EurycleiaError";
     this.status = status;
   }
 }
 
 async function connectionInfo() {
-  if (process.env.TASKVAULT_URL && process.env.TASKVAULT_TOKEN) {
-    return { url: process.env.TASKVAULT_URL, token: process.env.TASKVAULT_TOKEN };
+  const env = (name) => process.env[`EURYCLEIA_${name}`] || process.env[`TASKVAULT_${name}`];  // 0.5's names
+  if (env("URL") && env("TOKEN")) {
+    return { url: env("URL"), token: env("TOKEN") };
   }
-  const home = process.env.TASKVAULT_HOME || join(homedir(), ".taskvault");
+  const fresh = join(homedir(), ".eurycleia"), legacy = join(homedir(), ".taskvault");
+  const home = env("HOME") || (existsSync(legacy) && !existsSync(fresh) ? legacy : fresh);
   try {
     const info = JSON.parse(await readFile(join(home, "api.json"), "utf8"));
     return { url: info.url, token: info.token };
   } catch {
-    throw new TaskVaultError(
-      "can't find a running taskvault: start `taskvault api`, or set TASKVAULT_URL and TASKVAULT_TOKEN");
+    throw new EurycleiaError(
+      "can't find a running eurycleia: start `eurycleia api`, or set EURYCLEIA_URL and EURYCLEIA_TOKEN");
   }
 }
 
-export class TaskVault {
+export class Eurycleia {
   #url;
   #token;
   #handlers = new Map();
   #timeoutMs;
 
-  /** Use `TaskVault.connect()` unless you pass the address and token yourself. */
+  /** Use `Eurycleia.connect()` unless you pass the address and token yourself. */
   constructor({ url, token, timeoutMs = 600_000 }) {
     const u = new URL(url);
     if (u.protocol !== "http:" || !LOCAL_HOSTS.has(u.hostname)) {
-      throw new TaskVaultError("taskvault api only runs on this computer (http://127.0.0.1)");
+      throw new EurycleiaError("eurycleia api only runs on this computer (http://127.0.0.1)");
     }
-    if (!token) throw new TaskVaultError("missing token");
+    if (!token) throw new EurycleiaError("missing token");
     u.hostname = "127.0.0.1";          // the server listens on IPv4 only: never let "localhost" go to ::1
     this.#url = u.origin;
     this.#token = token;
     this.#timeoutMs = timeoutMs;
   }
 
-  /** Connect using TASKVAULT_URL / TASKVAULT_TOKEN, or the file `taskvault api` writes. */
+  /** Connect using EURYCLEIA_URL / EURYCLEIA_TOKEN, or the file `eurycleia api` writes. */
   static async connect(options = {}) {
-    const tv = new TaskVault({ ...(await connectionInfo()), ...options });
+    const tv = new Eurycleia({ ...(await connectionInfo()), ...options });
     await tv.#request("GET", "/v1/health");
     return tv;
   }
 
   toString() {
-    return `TaskVault(${this.#url})`;      // never the token
+    return `Eurycleia(${this.#url})`;      // never the token
   }
 
   toJSON() {
@@ -74,8 +77,8 @@ export class TaskVault {
 
   /**
    * Run an approved action in your own code. `handler(args)` gets the REAL values (e.g. the real card number)
-   * only after taskvault has checked the action. Don't log them or pass them to the model; whatever you return
-   * is masked by taskvault before the model sees it.
+   * only after eurycleia has checked the action. Don't log them or pass them to the model; whatever you return
+   * is masked by eurycleia before the model sees it.
    */
   onAction(sink, handler) {
     if (typeof handler !== "function") throw new TypeError("handler must be a function");
@@ -90,7 +93,7 @@ export class TaskVault {
   }
 
   // Every request is signed with the token (which itself never goes over the connection), and every reply
-  // must carry the server's signature: a different program listening on the port can't pretend to be taskvault.
+  // must carry the server's signature: a different program listening on the port can't pretend to be eurycleia.
   async #request(method, path, body) {
     const text = body === undefined ? "" : JSON.stringify(body);
     const ts = String(Math.floor(Date.now() / 1000));
@@ -101,31 +104,31 @@ export class TaskVault {
     try {
       res = await fetch(this.#url + path, {
         method,
-        headers: { "content-type": "application/json", "x-taskvault-time": ts, "x-taskvault-nonce": nonce,
-                   "x-taskvault-auth": mac },
+        headers: { "content-type": "application/json", "x-eurycleia-time": ts, "x-eurycleia-nonce": nonce,
+                   "x-eurycleia-auth": mac },
         body: body === undefined ? undefined : text,
         redirect: "error",
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch (e) {
-      throw new TaskVaultError(`can't reach taskvault at ${this.#url}: ${e.cause?.code || e.name}`);
+      throw new EurycleiaError(`can't reach eurycleia at ${this.#url}: ${e.cause?.code || e.name}`);
     }
     const raw = Buffer.from(await res.arrayBuffer());
     const expected = createHmac("sha256", this.#token)
       .update(["TV1-RESPONSE", nonce, String(res.status), sha256(raw)].join("\n")).digest();
-    const got = Buffer.from(res.headers.get("x-taskvault-auth") || "", "hex");
+    const got = Buffer.from(res.headers.get("x-eurycleia-auth") || "", "hex");
     if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
-      throw new TaskVaultError(res.status === 401
-        ? "taskvault refused the request: wrong token, or this computer's clock is off by more than 2 minutes"
-        : `the server at ${this.#url} couldn't prove it is taskvault; not trusting its reply`, res.status);
+      throw new EurycleiaError(res.status === 401
+        ? "eurycleia refused the request: wrong token, or this computer's clock is off by more than 2 minutes"
+        : `the server at ${this.#url} couldn't prove it is eurycleia; not trusting its reply`, res.status);
     }
     let data;
     try {
       data = JSON.parse(raw.toString("utf8"));
     } catch {
-      throw new TaskVaultError("unexpected reply from taskvault", res.status);
+      throw new EurycleiaError("unexpected reply from eurycleia", res.status);
     }
-    if (!res.ok) throw new TaskVaultError(data.error || `taskvault replied ${res.status}`, res.status);
+    if (!res.ok) throw new EurycleiaError(data.error || `eurycleia replied ${res.status}`, res.status);
     return data;
   }
 
@@ -183,7 +186,7 @@ export class Task {
   async callForModel(name, args = {}) {
     const r = await this.call(name, args);
     if (r.ok) return typeof r.result === "string" ? r.result : JSON.stringify(r.result);
-    return r.blocked ? `Blocked by taskvault: ${r.reason}` : `Error: ${r.error}`;
+    return r.blocked ? `Blocked by eurycleia: ${r.reason}` : `Error: ${r.error}`;
   }
 
   /** Read from a source directly (code-first apps). */
@@ -246,3 +249,6 @@ export class Task {
     return "Task";
   }
 }
+
+/** The names from taskvault 0.5, kept so existing code still works. */
+export { Eurycleia as TaskVault, EurycleiaError as TaskVaultError };

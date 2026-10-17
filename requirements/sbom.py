@@ -1,10 +1,10 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Write a CycloneDX software bill of materials (SBOM) for a taskvault release, using only the standard library.
+"""Write a CycloneDX software bill of materials (SBOM) for a eurycleia release, using only the standard library.
 
-    python requirements/sbom.py requirements/runtime.lock dist/taskvault-sbom.cdx.json
+    python requirements/sbom.py requirements/runtime.lock dist/eurycleia-sbom.cdx.json
 
-It lists taskvault and every library it installs, with exact versions and the checksums from the lock file,
+It lists eurycleia and every library it installs, with exact versions and the checksums from the lock file,
 so anyone can see precisely what is inside a release and check it against vulnerability databases.
 """
 
@@ -39,16 +39,16 @@ def parse_lock(text: str) -> list[dict]:
 
 def build(lock: Path) -> dict:
     sys.path.insert(0, str(ROOT))
-    from taskvault import __version__
-    me = f"pkg:pypi/taskvault@{__version__}"
+    from eurycleia import __version__
+    me = f"pkg:pypi/eurycleia@{__version__}"
     comps = parse_lock(lock.read_text())
     return {
         "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
         "serialNumber": f"urn:uuid:{uuid.uuid4()}",
         "metadata": {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "tools": {"components": [{"type": "application", "name": "taskvault requirements/sbom.py"}]},
-            "component": {"type": "library", "name": "taskvault", "version": __version__, "purl": me,
+            "tools": {"components": [{"type": "application", "name": "eurycleia requirements/sbom.py"}]},
+            "component": {"type": "library", "name": "eurycleia", "version": __version__, "purl": me,
                           "bom-ref": me, "licenses": [{"license": {"id": "AGPL-3.0-only"}}],
                           "supplier": {"name": "AgentP-Codes"}},
         },
@@ -62,4 +62,4 @@ if __name__ == "__main__":
     bom = build(lock)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(bom, indent=2) + "\n")
-    print(f"SBOM: taskvault {bom['metadata']['component']['version']} + {len(bom['components'])} libraries -> {out}")
+    print(f"SBOM: eurycleia {bom['metadata']['component']['version']} + {len(bom['components'])} libraries -> {out}")

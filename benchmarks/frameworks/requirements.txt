@@ -1,0 +1,10 @@
+# Framework benchmark only (not needed for eurycleia itself)
+langchain>=1.4
+langgraph>=1.2
+langchain-openai>=1.6
+langchain-anthropic>=1.7
+langchain-google-genai>=4.4
+langchain-ollama>=1.0
+crewai>=1.15
+pyyaml>=6
+cryptography>=49

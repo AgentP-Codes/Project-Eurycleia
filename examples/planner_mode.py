@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from demo.__main__ import make_vault  # noqa: E402  (fake company data for the example)
 from demo.world import World  # noqa: E402
-from taskvault.llm import AnthropicProvider, privileged_planner, quarantined_extractor  # noqa: E402
-from taskvault.planner import Planner  # noqa: E402
+from eurycleia.llm import AnthropicProvider, privileged_planner, quarantined_extractor  # noqa: E402
+from eurycleia.planner import Planner  # noqa: E402
 
 world = World()
 vault = make_vault(world)

@@ -7,9 +7,9 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import World
-from taskvault import Blocked, Policy, Vault
-from taskvault.boxes import BoxDB, BoxLocked, BoxSource, BoxStore, StaticHolderKeys, holder_name, is_box_ref
-from taskvault.crypto import KeyUnavailable, LocalKeyProvider
+from eurycleia import Blocked, Policy, Vault
+from eurycleia.boxes import BoxDB, BoxLocked, BoxSource, BoxStore, StaticHolderKeys, holder_name, is_box_ref
+from eurycleia.crypto import KeyUnavailable, LocalKeyProvider
 
 LEVELS = {"name": "protected", "email": "protected", "phone": "protected", "address": "protected",
           "plan": "normal", "card_number": "secret", "customer_id": "normal"}
@@ -215,7 +215,7 @@ def test_boxes_are_not_a_bottleneck(tmp_path, vault_keys):
 # ---- command line -----------------------------------------------------------------------
 
 def test_boxes_cli_end_to_end(tmp_path, capsys):
-    from taskvault.cli import main
+    from eurycleia.cli import main
     key, db, hk = str(tmp_path / "v.key"), str(tmp_path / "b.db"), str(tmp_path / "hk")
     main(["keys", "init", key])
     common = ["--key", key, "--db", db, "--holder-keys", hk]

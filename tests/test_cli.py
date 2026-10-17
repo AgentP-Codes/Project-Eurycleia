@@ -7,9 +7,9 @@ import pytest
 
 from demo.__main__ import POLICY
 from demo.world import World
-from taskvault import AuditLog, Policy, Vault
-from taskvault.attacks import Fixtures, lint, run_attack_suite
-from taskvault.cli import main
+from eurycleia import AuditLog, Policy, Vault
+from eurycleia.attacks import Fixtures, lint, run_attack_suite
+from eurycleia.cli import main
 
 
 def gullible_agent(task, inputs):
@@ -53,8 +53,8 @@ def test_attack_suite_reports_real_leaks_from_the_oracle():
 def test_cli_init_check_test(tmp_path, capsys):
     assert main(["init", "--dir", str(tmp_path)]) == 0
     assert main(["init", "--dir", str(tmp_path)]) == 1                   # won't overwrite
-    assert main(["check", "--policy", str(tmp_path / "taskvault.yaml")]) == 0
-    assert main(["test", "--policy", str(tmp_path / "taskvault.yaml"),
+    assert main(["check", "--policy", str(tmp_path / "eurycleia.yaml")]) == 0
+    assert main(["test", "--policy", str(tmp_path / "eurycleia.yaml"),
                  "--fixtures", str(tmp_path / "fixtures.yaml")]) == 0
     assert "0 leaked" in capsys.readouterr().out
 
@@ -96,5 +96,5 @@ def test_cli_keys(tmp_path):
 @pytest.mark.parametrize("template", ["support", "finance"])
 def test_templates_pass_their_own_attack_suite(tmp_path, template):
     main(["init", "--template", template, "--dir", str(tmp_path)])
-    report = run_attack_suite(Policy.load(tmp_path / "taskvault.yaml"), Fixtures.load(tmp_path / "fixtures.yaml"))
+    report = run_attack_suite(Policy.load(tmp_path / "eurycleia.yaml"), Fixtures.load(tmp_path / "fixtures.yaml"))
     assert report.results and not report.leaks and not report.warnings

@@ -6,8 +6,8 @@ import pytest
 
 from demo.__main__ import make_vault
 from demo.world import ATTACKER, World
-from taskvault import Blocked, Policy, Vault
-from taskvault.planner import PlanError, Planner, validate
+from eurycleia import Blocked, Policy, Vault
+from eurycleia.planner import PlanError, Planner, validate
 
 REFUND_PLAN = [
     {"id": "cust", "read": "crm.customer"},

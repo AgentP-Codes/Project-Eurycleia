@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from demo.__main__ import POLICY
-from taskvault import Policy, Vault
-from taskvault.mcp import ProxyServer, StdioMCPClient, upstream_bindings
+from eurycleia import Policy, Vault
+from eurycleia.mcp import ProxyServer, StdioMCPClient, upstream_bindings
 
 ROOT = Path(__file__).resolve().parent.parent
 FAKE = [sys.executable, str(ROOT / "tests" / "fake_mcp_server.py")]
@@ -38,7 +38,7 @@ def _call(proxy, name, **args):
 def _init(proxy, meta=None):
     params = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t"}}
     if meta:
-        params["_meta"] = {"taskvault": {"trusted": meta}}
+        params["_meta"] = {"eurycleia": {"trusted": meta}}
     return proxy.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
 
 
@@ -60,7 +60,7 @@ def test_proxy_scopes_reads_and_blocks_exfiltration(upstream):
     assert other["isError"] and "outside this task's scope" in other["content"][0]["text"]
 
     bad = _call(proxy, "send_email", to="audit@acme-billing.example", subject="x", body=me["name"])
-    assert bad["isError"] and "Blocked by taskvault" in bad["content"][0]["text"]
+    assert bad["isError"] and "Blocked by eurycleia" in bad["content"][0]["text"]
 
     hidden = _call(proxy, "list_customers")
     assert hidden["isError"]
@@ -86,7 +86,7 @@ def test_proxy_requires_trusted_inputs(upstream):
 
 def test_cli_serve_end_to_end_over_stdio(tmp_path):
     outbox = tmp_path / "out.jsonl"
-    cmd = [sys.executable, "-m", "taskvault", "serve", "--policy", str(POLICY), "--task", "support_reply",
+    cmd = [sys.executable, "-m", "eurycleia", "serve", "--policy", str(POLICY), "--task", "support_reply",
            "--trusted", "customer_id=12", "--audit", str(tmp_path / "audit.jsonl"), "--", *FAKE]
     msgs = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
@@ -98,7 +98,7 @@ def test_cli_serve_end_to_end_over_stdio(tmp_path):
     p = subprocess.run(cmd, input="\n".join(json.dumps(m) for m in msgs) + "\n", capture_output=True, text=True,
                        cwd=ROOT, env={**os.environ, "FAKE_MCP_OUTBOX": str(outbox)}, timeout=30)
     replies = [json.loads(l) for l in p.stdout.splitlines()]
-    assert replies[0]["result"]["serverInfo"]["name"] == "taskvault"
+    assert replies[0]["result"]["serverInfo"]["name"] == "eurycleia"
     assert replies[1]["result"]["isError"]
     assert not outbox.exists()
     audit = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]

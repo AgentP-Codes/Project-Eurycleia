@@ -8,7 +8,7 @@ import pytest
 
 from demo.__main__ import POLICY, make_vault
 from demo.world import World
-from taskvault import Blocked, Policy, SinkError, Vault
+from eurycleia import Blocked, Policy, SinkError, Vault
 
 OWNER = "priya.shah@example.com"
 
@@ -148,7 +148,7 @@ def test_agent_chosen_names_are_not_written_raw_to_the_audit_log():
 # ---- 6. tampered deposit boxes fail as a normal block ------------------------------------
 
 def test_tampered_box_data_is_a_logged_block_not_a_crash(tmp_path):
-    from taskvault.crypto import LocalKeyProvider
+    from eurycleia.crypto import LocalKeyProvider
     from tests.test_boxes import _vault_on_boxes
     vault, world = _vault_on_boxes(str(tmp_path / "b.db"), LocalKeyProvider(tmp_path / "v.key"))
     task = vault.start_task("support_reply", customer_id=12)
@@ -162,8 +162,8 @@ def test_tampered_box_data_is_a_logged_block_not_a_crash(tmp_path):
 # ---- 7. damaged files: clear errors and a way back ---------------------------------------
 
 def test_a_crash_mid_write_can_be_repaired_without_hiding_tampering(tmp_path, capsys):
-    from taskvault.audit import AuditError, AuditLog
-    from taskvault.cli import main
+    from eurycleia.audit import AuditError, AuditLog
+    from eurycleia.cli import main
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path)
     for i in range(3):
@@ -187,11 +187,11 @@ def test_a_crash_mid_write_can_be_repaired_without_hiding_tampering(tmp_path, ca
 
 
 def test_damaged_key_file_gives_a_clear_error(tmp_path):
-    from taskvault.crypto import KeyUnavailable, LocalKeyProvider
+    from eurycleia.crypto import KeyUnavailable, LocalKeyProvider
     for content in (b"not a key", b"", base64_of(b"short")):
         p = tmp_path / "k.key"
         p.write_bytes(content)
-        with pytest.raises(KeyUnavailable, match="valid taskvault key"):
+        with pytest.raises(KeyUnavailable, match="valid eurycleia key"):
             LocalKeyProvider(p, create=False).data_key()
 
 
@@ -203,7 +203,7 @@ def base64_of(b):
 @pytest.mark.parametrize("text", ["version: 1\nsources: 5", "- a\n- b", "tasks: [1]", "tools: {x: 5}",
                                   "internal_domains: acme.example"])
 def test_policies_of_the_wrong_shape_give_a_policy_error(tmp_path, text):
-    from taskvault import PolicyError
+    from eurycleia import PolicyError
     p = tmp_path / "p.yaml"
     p.write_text(text)
     with pytest.raises(PolicyError):
@@ -213,7 +213,7 @@ def test_policies_of_the_wrong_shape_give_a_policy_error(tmp_path, text):
 def test_a_recipient_pattern_written_as_text_is_rejected_not_read_as_characters():
     import copy
 
-    from taskvault import PolicyError
+    from eurycleia import PolicyError
     data = copy.deepcopy(Policy.load(POLICY).raw)
     data["tasks"]["support_reply"]["sinks"]["email.send"]["allowed_recipients"] = "*@acme.example"
     with pytest.raises(PolicyError, match="must be a list"):
@@ -270,7 +270,7 @@ def test_planner_honours_document_level_labels():
     re-encoded by a fooled extractor and sent out."""
     import base64
 
-    from taskvault.planner import Planner
+    from eurycleia.planner import Planner
     outbox = []
     task = _labelled_docs_vault(outbox).start_task("reply", customer_id=12)
     plan = [{"id": "c", "read": "customers"}, {"id": "m", "read": "memos", "key": "m1"},
@@ -284,8 +284,8 @@ def test_planner_honours_document_level_labels():
 
 def test_forgetting_a_holder_leaves_no_index_rows(tmp_path):
     """Report minor note: forget_holder left the encrypted field-name list behind."""
-    from taskvault.boxes import BoxStore, StaticHolderKeys
-    from taskvault.crypto import LocalKeyProvider
+    from eurycleia.boxes import BoxStore, StaticHolderKeys
+    from eurycleia.crypto import LocalKeyProvider
     keys = StaticHolderKeys()
     for h in ("customer:12", "customer:45"):
         keys.create(h)
@@ -305,7 +305,7 @@ def test_detector_stays_fast_on_hostile_text():
     """Report finding 2: overlap bookkeeping was quadratic, so crafted text could stall outbound checks."""
     import time
 
-    from taskvault.detect import scan_text
+    from eurycleia.detect import scan_text
     text = "0400 111 222 " * 25_000                      # ~325 KB of phone-like numbers
     t0 = time.perf_counter()
     assert len(scan_text(text)) > 10_000                 # phone numbers (and digit runs that pass the card check)
@@ -314,7 +314,7 @@ def test_detector_stays_fast_on_hostile_text():
 
 def test_a_file_audit_log_keeps_a_bounded_window_in_memory(tmp_path):
     """Found by the soak test: a long-running server kept every audit entry in memory as well as on disk."""
-    from taskvault import AuditLog
+    from eurycleia import AuditLog
     log = AuditLog(tmp_path / "a.jsonl", keep=100)
     for i in range(1000):
         log.record("x", i=i)
@@ -333,7 +333,7 @@ def test_windows_file_lock_unlocks_the_byte_it_locked(tmp_path, monkeypatch):
     msvcrt that is just as strict reproduces it here."""
     import os as _os
 
-    from taskvault import audit as audit_mod
+    from eurycleia import audit as audit_mod
 
     class StrictMsvcrt:
         LK_LOCK, LK_UNLCK = 1, 0

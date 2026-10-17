@@ -7,7 +7,7 @@ import pytest
 from demo.__main__ import POLICY, make_vault, run
 from demo.agents import HijackedAgent, LegitAgent
 from demo.world import ATTACKER, World
-from taskvault import AuditLog, Blocked, Policy, PolicyError, Vault
+from eurycleia import AuditLog, Blocked, Policy, PolicyError, Vault
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ def test_logs_and_audit_never_contain_the_blocked_values(caplog):
     from demo.__main__ import make_vault
     from demo.world import World
 
-    caplog.set_level(logging.INFO, logger="taskvault")
+    caplog.set_level(logging.INFO, logger="eurycleia")
     world = World()
     vault = make_vault(world)
     task = vault.start_task("support_reply", customer_id=12)

@@ -9,7 +9,7 @@ import pytest
 
 from demo.__main__ import make_vault
 from demo.world import World
-from taskvault.mcp import ProxyServer as MCPServer
+from eurycleia.mcp import ProxyServer as MCPServer
 
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}
 GARBAGE = [
@@ -22,7 +22,7 @@ GARBAGE = [
     '{"method": "tools/call", "id": 10, "params": {"name": "get_customer", "arguments": {"customer_id": {"$gt": 0}}}}',
     '{"method": "tools/call", "id": 11, "params": {"name": "refund", "arguments": {"card": null, "amount": "x"}}}',
     '{"method": "initialize", "id": 12, "params": {"_meta": "x"}}',
-    '{"method": "initialize", "id": 13, "params": {"_meta": {"taskvault": {"trusted": [1]}}}}',
+    '{"method": "initialize", "id": 13, "params": {"_meta": {"eurycleia": {"trusted": [1]}}}}',
     '{"method": "tools/list", "id": {"nested": true}}',
     "{" * 5000, '{"method": "' + "x" * 200_000 + '", "id": 14}',
 ]
