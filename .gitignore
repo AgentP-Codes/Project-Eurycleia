@@ -6,3 +6,8 @@ __pycache__/
 *.jsonl
 dist/
 build/
+.mypy_cache/
+.hypothesis/
+.ruff_cache/
+real-apps-state.json
+*.report.json
