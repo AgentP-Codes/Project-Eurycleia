@@ -4,6 +4,6 @@ pytest>=8
 ruff>=0.5
 hypothesis>=6
 psycopg[binary]>=3.1
-build>=1
+build>=1.6.1
 pip-audit>=2.7
 setuptools>=77
