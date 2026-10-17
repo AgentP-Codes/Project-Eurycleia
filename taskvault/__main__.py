@@ -7,4 +7,3 @@ import sys
 from eurycleia.cli import main
 
 sys.exit(main())
-

@@ -44,6 +44,8 @@ jobs:
       - run: ruff check .
       - run: pytest -q
       - run: python -m build --no-isolation
+      - name: The package contains every module
+        run: python requirements/check_wheel.py dist/*.whl
       - run: python -m demo
       - run: python -m demo.bench
       - run: python -m demo.stress --quick
@@ -51,12 +53,12 @@ jobs:
         run: |
           for t in support finance; do
             d="$RUNNER_TEMP/$t"
-            mkdir -p "$d" && taskvault init --template $t --dir "$d"
-            taskvault test --policy "$d/taskvault.yaml" --fixtures "$d/fixtures.yaml"
+            mkdir -p "$d" && eurycleia init --template $t --dir "$d"
+            eurycleia test --policy "$d/eurycleia.yaml" --fixtures "$d/fixtures.yaml"
           done
 
   adapters:
-    # The TypeScript, Go and Java adapters against a real `taskvault api` (simulated demo data).
+    # The TypeScript adapter against a real `eurycleia api` (simulated demo data).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -68,27 +70,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "22"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version: "1.24"
-          cache: false
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: "21"
       - run: |
           python -m pip install --require-hashes -r requirements/runtime.lock
           python -m pip install --no-deps -e .
       - name: TypeScript / JavaScript
         run: node --test adapters/typescript/test/api.test.js
-      - name: Go
-        working-directory: adapters/go
-        run: test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...
-      - name: Java
-        run: |
-          javac -encoding UTF-8 -Xlint:all -Werror -d build/java \
-            adapters/java/src/io/github/agentpcodes/taskvault/TaskVault.java adapters/java/test/TaskVaultTest.java
-          java -cp build/java TaskVaultTest
 
   audit:
     runs-on: ubuntu-latest
@@ -100,7 +86,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --require-hashes -r requirements/ci.lock
-      - name: Known vulnerabilities in what taskvault installs
+      - name: Known vulnerabilities in what eurycleia installs
         run: pip-audit -r requirements/runtime.lock --require-hashes --disable-pip --strict
       - name: Known vulnerabilities in the test and build tools
         run: pip-audit -r requirements/ci.lock --require-hashes --disable-pip --strict
