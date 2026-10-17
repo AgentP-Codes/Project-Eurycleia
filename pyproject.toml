@@ -3,8 +3,8 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "taskvault"
-version = "0.5.1"
+name = "eurycleia"
+version = "0.6.0"
 description = "A task-scoped data vault for AI agents: contain prompt injection by limiting what a hijacked agent can reach and where data can go."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -42,18 +42,20 @@ postgres = ["psycopg[binary]>=3.1"]
 all = ["boto3>=1.34", "psycopg[binary]>=3.1"]
 
 [project.urls]
-Homepage = "https://github.com/AgentP-Codes/Task-Vault-Name-is-bound-to-Change-"
-Issues = "https://github.com/AgentP-Codes/Task-Vault-Name-is-bound-to-Change-/issues"
+Homepage = "https://github.com/AgentP-Codes/project-eurycleia"
+Issues = "https://github.com/AgentP-Codes/project-eurycleia/issues"
 
 [project.scripts]
-taskvault = "taskvault.cli:main"
+eurycleia = "eurycleia.cli:main"
+eury = "eurycleia.cli:main"
+taskvault = "eurycleia.cli:main"        # the name before 0.6, so existing setups keep working
 
-[tool.setuptools]
-packages = ["taskvault", "taskvault.connectors", "taskvault.templates"]
+[tool.setuptools.packages.find]
+include = ["eurycleia", "eurycleia.*", "taskvault"]   # every subpackage; taskvault: the old name, kept for 0.5 code
 
 [tool.setuptools.package-data]
-"taskvault" = ["py.typed"]
-"taskvault.templates" = ["*.yaml"]
+"eurycleia" = ["py.typed"]
+"eurycleia.templates" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

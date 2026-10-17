@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.6.0
+
+**New name: Eurycleia**
+- taskvault is now Eurycleia (`pip install` the `eurycleia` package, `import eurycleia`, command `eurycleia` or `eury` for short). The name is from the *Odyssey*: the keeper of the household's storeroom keys.
+- Nothing set up with 0.5 breaks: `import taskvault`, `python -m taskvault` and the `taskvault` command still work, settings named `TASKVAULT_*`, the `~/.taskvault` folder, a `taskvault.yaml` policy and the `_meta.taskvault` MCP setting are still read when the new names aren't there, and agents connected by 0.5 are still recognised by `connect`, `enforce`, `watch` and `disconnect`. Encryption is unchanged, so existing deposit boxes and keyed audit logs open as before. The TypeScript adapter still exports `TaskVault`
+- The local API's signature headers are now `x-eurycleia-*`: update the TypeScript adapter together with Eurycleia
+
+**Tested with real models**
+- Four Claude models through the paid API (Haiku 4.5, Sonnet 5, Sonnet 5.5, Opus 5.5 twice), 21 tickets with 20 attacks each: with Eurycleia 0 of 100 attacks leaked, without it 12 of 100. Every model finished at least as many tickets with Eurycleia as without. [docs/real-model-results.md](docs/real-model-results.md)
+- AgentDojo ran end to end with a real model for the first time: Claude Sonnet 5.5 on 20 banking attacks finished the same tasks with Eurycleia's strict rules as without (18/20); the model resisted all 20 attacks on its own
+
+**Benchmark**
+- Eurycleia's rules on [AgentDojo](benchmarks/agentdojo/README.md), a public prompt-injection benchmark (97 tasks, 35 attacks, 4 suites). A replay of every task's and attack's reference actions needs no model or API key: with per-task rules 85/97 tasks still done and 29/609 attacks succeeded (552/609 with no defence); with one set of rules per suite, 85/97 and 142/609. Recipients are trusted only from data the user's side wrote, so the results are the same when the attacker is the sender of the email or payment carrying the attack (a review found an earlier version trusted sender fields and AgentDojo's contact list, which includes anyone who emailed the user). A runner for real models (Gemini, Ollama, OpenAI-compatible) saves as it goes and resumes after a quota stop. Not part of the package
+
+**Policy from watch mode**
+- `eurycleia learn --policy FILE [--audit LOG]`: drafts a policy from what the agent did while Eurycleia watched, into a new file with a report (`learn-report.md`) of every change and why. It widens only for patterns seen in many separate tasks, in the narrowest form (the contact on the task's own record); never for addresses from untrusted content, other customers' data, secrets, owner-only data, outside addresses or extra arguments, and nothing at all from a task where something looked wrong. Personal-data fields and big limit increases are left for you to decide. It sets missing call limits, and replays the watched tasks to show what the draft would still block. Your policy file is never changed
+- To make this possible the audit log now records how each recipient relates to the task (for example "the contact on this task's own customer record", "an address from untrusted content"), in policy names only, never the address. Task ids in the log are unique across processes, so several MCP servers can share one log
+
+**Business customers and staff**
+- `owner_domain` on a source: a business customer's data may go to anyone at exactly that company's own email domain on file. Domains that look like shared email services are refused (any containing a known provider's name, such as yahoo.com.au or hotmail.fr, plus bare endings like co.uk); add others with the new top-level `shared_email_domains`. Recipients: `*@crm.account:{account_id}.domain`
+- `share_internally: false` on a source: its protected data goes only to its owner, not to anyone at `internal_domains` (for staff records: a colleague doesn't get someone's salary)
+- Example policy and tests for both: [`examples/business_and_staff.yaml`](examples/business_and_staff.yaml); "Who owns a record" in the policy reference
+
+**Harder to tamper with**
+- Audit logs with a key (`--key` on `serve`, `api`, `connect`; `AuditLog(..., key=audit_key(provider))`): each entry carries a keyed MAC and a keyed `.head` record notes where the log ends, so rewriting the log needs the key, and cutting entries off the end or deleting the `.head` record is detected. `eurycleia audit verify FILE --key KEYFILE`. Writing to a log that was cut short is refused. Eurycleia never starts keying a log that already has entries by itself: `eurycleia audit seal FILE --key KEYFILE` does it once, after checking the chain, and refuses a log that has held keyed entries (`connect --key` says when it's needed). A crash between writing an entry and its `.head` record is recovered. Verifying while other processes write gives no false alarms. Rolling both files back to older copies isn't detected (documented)
+- Owner-only files on Windows: key files, the local API's token file, audit logs, box archives and holder keys get an access list with only the current user (0600 is ignored on Windows)
+- Tombstones for forgotten box holders: after `forget_holder`, new boxes and deposits for them are refused (including a deposit already under way), so a later import can't quietly bring their data back; the usual spellings of an id (`customer:012`, `customer:12.0`) count as the same holder; `boxes put` skips their rows; `eurycleia boxes unforget` if they genuinely return. The tombstone is a keyed fingerprint, not a name
+
+**Also fixed**
+- A customer email address on file containing `*` or `?` (legal in an address) was treated as a pattern, so `*@gmail.com` on file allowed any gmail address as a recipient. Addresses from records are now always compared exactly (present in earlier versions too)
+- `eurycleia check` warns when a task reads staff records (`share_internally: false`) and may send to a wildcard such as `*@yourcompany.com`
+- Windows: a key file is never left in place if its access list can't be set; key files and audit logs from before 0.6 get one when next opened
+- The source archive now includes the tests' data (demo, examples, docs)
+- Secret scanning: a tax file number that shares digits with a card-shaped number next to it is now hidden in full (overlapping secret values are merged instead of one being dropped). Found by the fuzz tests
+- LangChain and CrewAI tools accept a record id sent as a number (`customer_id=12`), as models often do; before, the framework rejected the call before it reached Eurycleia
+- `SMTPSink` now checks the mail server's TLS certificate (Python's default for `starttls()` doesn't)
+
+**Easier to start**
+- A 5-minute [quick start](docs/quickstart.md), with its example run in the tests
+- Ready for PyPI: the release workflow can publish with trusted publishing (no stored password), switched off until the project's final name is chosen
+- Fixed: the CrewAI and LangChain helpers (`eurycleia.integrations`) were missing from the 0.5 release files, so they only worked from a source checkout. Every build is now checked to contain every module
+
+**Smaller**
+- Only the TypeScript/JavaScript adapter is kept; Go and Java were removed (the local API stays, so any language can sign requests the same way)
+
+**Testing (not part of the package)**
+- A spending meter in A$ with a hard limit, reported-token costs and Claude prompt caching for every benchmark runner; OpenRouter as a provider
+- New benchmarks: LangGraph and CrewAI agents ([benchmarks/frameworks](benchmarks/frameworks/run_frameworks.py)), an API model using an MCP server before and after `eurycleia connect` ([benchmarks/mcp_agent](benchmarks/mcp_agent/run_mcp.py)), a long unattended run ([benchmarks/longrun](benchmarks/longrun/run_long.py)) and real apps in test accounts: HubSpot, Zendesk, Stripe test mode, Slack, Gmail/SMTP/Microsoft 365 ([benchmarks/real_apps](benchmarks/real_apps/REAL_APPS.md))
+- The AgentDojo runner now meters cost, samples, and supports Claude and OpenRouter
+- `eurycleia learn` with a real model: watch, learn a draft, then check it enforced on fresh tickets ([benchmarks/learn](benchmarks/learn/run_learn.py))
+- Running order for the test round: [benchmarks/RUN_GUIDE.md](benchmarks/RUN_GUIDE.md)
+- AgentDojo with newer Claude models: no temperature is sent when the Anthropic library doesn't take one, and a call a model refuses because of its temperature setting is sent again without it. Claude Sonnet 5.5 prices added
+
 ## 0.5.1
 
 Security fixes from a private report on 0.5.0 (reproduced and fixed here; tested with simulated data and scripted calls, not live models).

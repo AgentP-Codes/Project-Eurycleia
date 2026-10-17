@@ -1,0 +1,8 @@
+# The source archive holds what the tests need to run, not only the package
+graft tests
+graft demo
+graft examples
+graft docs
+graft requirements
+include CHANGELOG.md CONTRIBUTING.md SECURITY.md
+global-exclude __pycache__ *.pyc

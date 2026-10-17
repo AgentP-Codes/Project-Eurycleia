@@ -1,19 +1,31 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
-"""taskvault - a task-scoped data vault for AI agents (working name).
+"""taskvault is now Eurycleia (`import eurycleia`). This keeps code written for taskvault 0.5 working:
+`taskvault.<module>` is the very same module as `eurycleia.<module>`, so classes and errors are shared."""
 
-Core:      Vault, Task, Policy, Blocked, AuditLog
-Planner:   taskvault.planner.Planner (provenance-tracked, CaMeL-style)
-Storage:   taskvault.crypto (customer-held keys), taskvault.cache (read-through)
-Adapters:  taskvault.connectors, taskvault.mcp (proxy), taskvault.llm (models)
-Tooling:   taskvault.attacks (attack suite), `taskvault` CLI
-"""
+from __future__ import annotations
 
-__version__ = "0.5.1"
+import importlib
+import importlib.abc
+import importlib.util
+import sys
 
-from .audit import AuditLog  # noqa: E402
-from .policy import Policy, PolicyError  # noqa: E402
-from .vault import ApprovalRequest, Blocked, SinkError, Task, Vault  # noqa: E402
+from eurycleia import *  # noqa: F403
+from eurycleia import __all__, __version__  # noqa: F401
 
-__all__ = ["ApprovalRequest", "AuditLog", "Blocked", "Policy", "PolicyError", "SinkError", "Task", "Vault",
-           "__version__"]
+
+class _Alias(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, name, path=None, target=None):
+        if name.startswith("taskvault.") and name != "taskvault.__main__":
+            return importlib.util.spec_from_loader(name, self)
+        return None
+
+    def create_module(self, spec):
+        return importlib.import_module("eurycleia" + spec.name[len("taskvault"):])
+
+    def exec_module(self, module):
+        pass                                        # already loaded as eurycleia.<module>
+
+
+if not any(isinstance(f, _Alias) for f in sys.meta_path):
+    sys.meta_path.insert(0, _Alias())

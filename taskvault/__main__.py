@@ -1,7 +1,9 @@
 # Copyright 2026 AgentP-Codes
 # SPDX-License-Identifier: AGPL-3.0-only
+"""`python -m taskvault` still works (agents connected with taskvault 0.5 start the proxy this way)."""
+
 import sys
 
-from .cli import main
+from eurycleia.cli import main
 
 sys.exit(main())

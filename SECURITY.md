@@ -1,6 +1,6 @@
 # Security policy
 
-taskvault is security software, so we take reports seriously.
+Eurycleia is security software, so we take reports seriously.
 
 ## Reporting a vulnerability
 
@@ -11,8 +11,8 @@ Include what you found, how to reproduce it, and which guarantee in [docs/threat
 ## In scope
 
 - Any way for untrusted text to make the vault read outside a task's scope, reveal a secret to the model, or send protected data to someone who isn't its owner
-- Audit log tampering that `taskvault audit verify` doesn't catch
-- Cryptographic weaknesses in `taskvault.crypto`, the cache or trace storage
+- Audit log tampering that `eurycleia audit verify` doesn't catch
+- Cryptographic weaknesses in `eurycleia.crypto`, the cache or trace storage
 - Injection into connectors (SQL, SOQL, path traversal, URL manipulation)
 
 ## Out of scope
