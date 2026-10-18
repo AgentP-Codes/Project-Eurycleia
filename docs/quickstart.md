@@ -5,10 +5,10 @@ You need Python 3.10 or newer.
 ## 1. Install
 
 ```bash
-pip install https://github.com/AgentP-Codes/project-eurycleia/releases/download/v0.6.0/eurycleia-0.6.0-py3-none-any.whl
+pip install eurycleia
 ```
 
-This installs the release file from GitHub; Eurycleia isn't on PyPI yet. It adds two small libraries, `pyyaml` and `cryptography`, and no AI company libraries.
+It adds two small libraries, `pyyaml` and `cryptography`, and no AI company libraries.
 
 ## 2. Make a policy and attack it
 

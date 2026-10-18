@@ -54,11 +54,11 @@ data, knows who it really belongs to, and keeps an attacker away from the agent'
 Requires Python 3.10 or later.
 
 ```bash
-pip install https://github.com/AgentP-Codes/project-eurycleia/releases/download/v0.6.0/eurycleia-0.6.0-py3-none-any.whl
+pip install eurycleia
 eurycleia --version
 ```
 
-Or `pip install git+https://github.com/AgentP-Codes/project-eurycleia` for the latest code. Optional extras: `postgres`, `aws`, `langchain`, `crewai`. Eurycleia isn't on PyPI yet. New to it? Follow the [5-minute quick start](docs/quickstart.md).
+Or `pip install git+https://github.com/AgentP-Codes/project-eurycleia` for the latest code. Optional extras: `postgres`, `aws`, `langchain`, `crewai`, for example `pip install "eurycleia[postgres]"`. New to it? Follow the [5-minute quick start](docs/quickstart.md).
 
 ## Get started
 

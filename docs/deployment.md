@@ -5,10 +5,10 @@ A checklist for running Eurycleia in front of real agents and real data.
 ## 1. Install and pin
 
 ```bash
-pip install "eurycleia[all] @ https://github.com/AgentP-Codes/project-eurycleia/releases/download/v0.6.0/eurycleia-0.6.0-py3-none-any.whl"
+pip install "eurycleia[all]==0.6.0"
 ```
 
-Eurycleia isn't on PyPI yet, so install from a release file. Pin the version. Read the changelog before upgrading, and rerun `eurycleia test` in CI on every upgrade.
+Pin the version. Read the changelog before upgrading, and rerun `eurycleia test` in CI on every upgrade.
 
 ## 2. Keys
 
