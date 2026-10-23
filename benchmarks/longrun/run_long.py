@@ -43,10 +43,9 @@ from eurycleia.llm import QuotaExhausted, ToolAgent  # noqa: E402
 CUSTOMER = "priya.shah@example.com"
 
 
-def make_provider(provider: str, model: str):
-    from eurycleia.llm import AnthropicProvider, GeminiProvider, OpenAIProvider, OpenRouterProvider
-    return {"anthropic": lambda: AnthropicProvider(model, cache=True), "openai": lambda: OpenAIProvider(model),
-            "gemini": lambda: GeminiProvider(model), "openrouter": lambda: OpenRouterProvider(model)}[provider]()
+def make_provider(provider: str, model: str | None):
+    from eurycleia.llm import make_provider as make
+    return make(provider, model, **({"cache": True} if provider == "anthropic" else {}))
 
 
 def rss_mb() -> float:
@@ -75,7 +74,7 @@ def open_files() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--provider", choices=["anthropic", "openai", "gemini", "openrouter"], required=True)
+    ap.add_argument("--provider", choices=["anthropic", "openai", "azure", "gemini", "openrouter"], required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--hours", type=float, default=0, help="stop after this long (0 = use --tickets)")
     ap.add_argument("--tickets", type=int, default=100)

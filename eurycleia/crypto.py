@@ -8,6 +8,7 @@ is encrypted with AES-256-GCM under a data key that the *customer* controls:
   * LocalKeyProvider - a key file on the customer's own machine or volume
   * KMSKeyProvider   - envelope encryption: the data key is wrapped by the
                        customer's cloud KMS key and only unwrapped in memory
+                       (AWS KMS: aws_kms_client; Azure Key Vault: eurycleia.azure)
 
 Deleting or revoking the customer key makes every stored ciphertext unreadable
 ("crypto-shredding"). The vault never needs to see a key it isn't given.

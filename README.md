@@ -5,13 +5,13 @@
 **A data vault for AI agents.** Eurycleia sits between an AI agent and your company's data. Each task sees only the data it needs, personal details and secrets are hidden from the AI, and data can only go where your policy allows, even if a prompt injection takes the agent over. It reduces risk; it doesn't remove it (see [Limitations](#limitations)).
 
 > [!WARNING]
-> **Early release: use at your own risk.** Eurycleia is new and hasn't been fully tested in real-world use. It hasn't had an independent security review, the connectors have only been tested against simulated services, and testing with live AI models is still limited (see [What's simulated](#whats-simulated) and [real-model results](docs/real-model-results.md)). Test results don't guarantee it will stop every attack. Don't rely on it as your only protection for sensitive or regulated data, and test it thoroughly in your own environment first. Things may change between versions.
+> **Early release: use at your own risk.** Eurycleia is new and hasn't been fully tested in real-world use. It hasn't had an independent security review, and live testing so far covers a few apps and models (see [What's simulated](#whats-simulated), [live test results](docs/live-test-results.md) and [real-model results](docs/real-model-results.md)). Test results don't guarantee it will stop every attack. Don't rely on it as your only protection for sensitive or regulated data, and test it thoroughly in your own environment first. Things may change between versions.
 >
 > **Not recommended for live production AI agents handling real customer data yet.** Use it for testing, prototypes and watch mode until it has been tested further.
 >
 > Provided "as is", without warranty of any kind, under the [AGPL-3.0 licence](LICENSE). Its features describe design goals, not guarantees. Please read the full [Disclaimer](#disclaimer) before using it.
 
-**Status:** v0.6.0 beta · Feedback, issues and ideas are very welcome.
+**Status:** v0.7.0 beta · Feedback, issues and ideas are very welcome.
 
 **How this was built:** Eurycleia was designed and directed by @AgentP-Codes. Much of the code, tests and documentation were written with the help of Claude (Anthropic's AI). The live model tests were run by the project using its own API keys. All the code is open for review.
 
@@ -36,6 +36,15 @@ data, knows who it really belongs to, and keeps an attacker away from the agent'
 - **Keeps a tamper-evident record** of what the agent read and did, with no real data values in it.
 - **Scans your data and writes a starter setup,** so you don't start from a blank page.
 - **Stays small.** Two required libraries, no AI company libraries, and it runs on an ordinary laptop.
+
+## What's new in 0.7
+
+- **Tested live, not simulated:** a real AI model answering a made-up company's support email, connected to real test accounts in HubSpot, Stripe and Slack, on Azure. Of 124 emails (63 attacks), the model alone leaked data in 19, and in none with Eurycleia, while every normal request was still handled. See [live test results](docs/live-test-results.md).
+- **Harder attacks:** 48 new attacks aimed at each protection, not just at the model.
+- **Catches reworded data:** personal details are still caught when spacing, punctuation or look-alike characters change, or a number is written backwards or in words.
+- **Azure:** Azure OpenAI models, sign-in with Azure's own identities instead of stored keys, and Azure Key Vault for the data key. A ready-made [live test setup](deploy/azure/README.md) for your own Azure subscription.
+- **Two security fixes,** reported privately: protected data could leave through an action that names no recipient, and through encoded, split or `mailto:` links. Upgrade from 0.6. See the [changelog](CHANGELOG.md).
+- **Fixes found by running for real,** including an audit log on a network file share.
 
 ## What's new in 0.6
 
@@ -111,6 +120,17 @@ eurycleia boxes put customers.csv --key vault.key --source crm.customer --key-co
 
 Deposit boxes are encrypted per customer, department or client company. The most sensitive tier needs both the vault's key and the holder's key, and the holder can require approval. `eurycleia boxes forget --holder customer:12` deletes one holder's data for an erasure request.
 
+## Tested live
+
+In October 2026 Eurycleia ran in front of a real agent (gpt-5-mini on Azure OpenAI) answering a made-up company's support email, with real test accounts in HubSpot, Stripe and Slack:
+
+| 124 emails (63 attacks) | Emails that leaked data | Normal emails done |
+|---|---|---|
+| Without Eurycleia | **19** | 61/61 |
+| With Eurycleia | **0** | 61/61 |
+
+One model so far, and the attacks were written by the project; refunds nobody asked for still got through (see [Limitations](#limitations)). Full results: [docs/live-test-results.md](docs/live-test-results.md).
+
 ## Tested with real AI models
 
 Eurycleia 0.6 was run against four Claude models through the paid API: 21 support tickets, 20 of them attacks,
@@ -128,7 +148,7 @@ once without Eurycleia and once with it (Opus twice). The samples are small, so 
   with it as without.
 - **Without it, every model was tricked,** including the largest and newest. Calm, believable requests worked
   best: a polite note asking to send details to a "bookkeeper" worked on three of the four models.
-- Earlier versions were also tested with Gemini and a local model. OpenAI models haven't been tested live yet.
+- Earlier versions were also tested with Gemini and a local model. An OpenAI model (gpt-5-mini) was tested live in 0.7.
 
 Full breakdown: [docs/real-model-results.md](docs/real-model-results.md).
 
@@ -147,7 +167,7 @@ This measures the rules, not a model, and the per-task rules were taken from eac
 **Try it with your own model.** The attack benchmark uses a fictional company and sends only invented test data to the provider (you pay their normal API costs):
 
 ```bash
-git clone https://github.com/AgentP-Codes/project-eurycleia && cd eurycleia
+git clone https://github.com/AgentP-Codes/project-eurycleia && cd project-eurycleia
 pip install -e .
 export ANTHROPIC_API_KEY=your-key        # Windows: set ANTHROPIC_API_KEY=your-key
 python -m demo.bench --provider anthropic --model claude-sonnet-5 --runs 3 --out results.json
@@ -157,10 +177,11 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 
 ## How it's tested
 
-- **About 700 automated tests,** including randomised (fuzz) tests, on Linux with Python 3.10 to 3.14, Windows and macOS.
+- **About 860 automated tests,** including randomised (fuzz) tests, on Linux with Python 3.10 to 3.14, Windows and macOS.
 - **Stress and load tests:** 2,000 tasks run at once from Python and Node; over 100,000 random API requests; long runs to catch memory leaks; large messages and databases. Run it yourself with `python -m demo.stress`.
 - **Reviews by separate AI agents** that tried to break the new code, plus external security reports. Every problem found is fixed and has a test.
 - **A public benchmark:** [AgentDojo](benchmarks/agentdojo/README.md), replayed without a model (see above).
+- **A live deployment:** a real model with real test accounts in HubSpot, Stripe and Slack on Azure ([results](docs/live-test-results.md)).
 - **Real models, frameworks and apps (in progress):** runners for API models, LangGraph and CrewAI, an MCP agent, long unattended runs and real apps in test accounts. See [benchmarks/RUN_GUIDE.md](benchmarks/RUN_GUIDE.md).
 - **Supply chain:** pinned, checksummed libraries, vulnerability checks on every change, and release builds set up to be signed with a list of what's inside.
 
@@ -175,9 +196,10 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 | TypeScript adapter | Real code, tested against a real `eurycleia api` with simulated data |
 | Demo company, customers, tickets and documents | **Simulated**: invented data |
 | "Hijacked" agents in the demo and offline benchmark | **Simulated**: scripted stand-ins that obey every injection |
-| Connectors (Salesforce, HubSpot, Stripe, Slack and others) | Real code, **tested against simulated API responses**, not live services |
+| HubSpot, Stripe (test mode) and Slack | Tested live, with test accounts and made-up data |
+| Other connectors (Salesforce and others) | Real code, **tested against simulated API responses**, not live services |
 | Claude, Gemini and Ollama | Tested with live models (see above) |
-| OpenAI | Real code; not yet tested with a live model |
+| OpenAI models | gpt-5-mini tested live on Azure OpenAI; others not yet |
 
 ## CLI
 
@@ -206,7 +228,7 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 
 ## Limitations
 
-- **Allowed actions aren't judged for content.** A fooled agent can still send the right customer a wrong message.
+- **Allowed actions aren't judged for content.** A fooled agent can still send the right customer a wrong message, or give a refund nobody asked for (kept to that customer's own payment and within the cap). In the live test this happened 8 times in 124 emails. Asking a person before unusual actions is planned.
 - **Reworded or encoded data** can sometimes reach a recipient the task already allows. Planner mode is designed to close this.
 - **Your app must supply trusted inputs honestly.** If "which customer is this?" comes from the email text, the protections don't hold.
 - **Setup is a draft.** Review what it writes, especially low-confidence fields listed in `setup-report.md`.

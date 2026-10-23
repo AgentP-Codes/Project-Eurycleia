@@ -5,7 +5,7 @@ A checklist for running Eurycleia in front of real agents and real data.
 ## 1. Install and pin
 
 ```bash
-pip install "eurycleia[all]==0.6.0"
+pip install "eurycleia[all]==0.7.0"
 ```
 
 Pin the version. Read the changelog before upgrading, and rerun `eurycleia test` in CI on every upgrade.

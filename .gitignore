@@ -11,3 +11,7 @@ build/
 .ruff_cache/
 real-apps-state.json
 *.report.json
+
+# the live test's own settings (setup.sh)
+deploy/azure/settings.env
+live-data/

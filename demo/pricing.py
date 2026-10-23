@@ -22,6 +22,7 @@ PRICES: dict[str, tuple[float, float, float, float]] = {
     "claude-sonnet-5-5": (2.00, 0.10, 2.50, 10.00),     # cache reads halved on 7 Oct 2026
     "claude-opus-5-5": (4.00, 0.40, 5.00, 20.00),
     "gpt-6-luna": (0.10, 0.01, 0.10, 0.50),
+    "gpt-5-mini": (0.25, 0.025, 0.25, 2.00),       # Azure Global Standard, checked 2026-10-19
     "gpt-5.6-luna": (0.10, 0.01, 0.10, 0.50),
     "gpt-6.1-sol": (2.00, 0.10, 2.00, 10.00),
     "gemini-3.5-flash-lite": (0.30, 0.03, 0.30, 2.50),

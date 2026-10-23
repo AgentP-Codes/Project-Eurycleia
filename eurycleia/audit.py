@@ -74,10 +74,16 @@ def owner_only(path: str | Path, required: bool = False) -> None:
     which keeps other accounts on the same computer out. If that fails, a warning is logged, or, with
     `required` (key files), the error is raised."""
     path = Path(path)
-    if not _WINDOWS:
-        os.chmod(path, 0o700 if path.is_dir() else 0o600)
-        return
     import logging
+    if not _WINDOWS:
+        try:
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        except OSError as e:   # e.g. a network share (SMB, Azure Files) that has no per-file permissions
+            if required:
+                raise
+            logging.getLogger("eurycleia").warning(
+                "couldn't make %s owner-only (%s); its folder's own access controls apply", path, e.strerror or e)
+        return
     try:
         sid = _current_sid()
         grant = f"*{sid}:(OI)(CI)F" if path.is_dir() else f"*{sid}:F"

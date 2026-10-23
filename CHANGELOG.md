@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.0
+
+**Tested live, not simulated**
+- A live deployment of a support agent: a real AI model (gpt-5-mini on Azure OpenAI) answering a made-up company's email, with real test accounts in HubSpot, Stripe (test mode) and Slack, running on Azure Container Apps. Round 2: 124 emails (63 attacks) handled with and without Eurycleia; 19 leaked data without it, none with it, and all 61 normal requests were done either way. [docs/live-test-results.md](docs/live-test-results.md)
+- The setup is in the repository (`deploy/azure`, `deploy/live`): a made-up company with planted canary codes, an agent that runs on a schedule, a feeder for test emails, a seeding job, a daily spending limit, a kill switch, rounds, and a no-email mode for when there's no mailbox. Secrets live only in Azure Key Vault. Not part of the package
+- 48 harder attacks aimed at each protection: reformatted and encoded data, data inside links and images, fake notices and forwarded messages, encoded instructions, another language, other customers' records, extra recipients and refunds nobody needs
+
+**Security fixes** (reported privately through GitHub's security advisories; thank you to the reporter)
+- **High:** a sink with no `recipient_arg` (a ticket comment, a record write, a webhook) wasn't checked for where protected data went, so a hijacked agent could send a customer's details anywhere the sink reached, such as another customer's ticket. Such a sink now can't carry protected data at all. If yours needs to, give it a `recipient_arg` the data's owner can be checked against. Affects 0.6.0 and earlier (GHSA-fh5g-34xr-j73j)
+- **Moderate:** customer data could leave in a link to an outside website when it was base64- or hex-encoded, written backwards, split across several links, or put in a `mailto:` link's subject. These are now caught, and a `mailto:` link counts as going to its address's domain. Affects 0.6.0 and earlier (GHSA-4q9w-8vgq-gw4v)
+
+**Catches reworded data**
+- The outgoing check now also catches personal details whose spacing or punctuation changed (`0255504579`, `02-5550-4579`), an email address spelled out (`name at example dot com`), look-alike characters (fullwidth digits, zero-width spaces), and a phone or card number written backwards or in words. Before, only the exact text was caught (links were already checked this way). Found in the 0.7 security review
+
+**Azure**
+- `azure` model provider: Azure OpenAI deployments through the v1 API, with an API key or Azure's own sign-in (managed identity, `az login`, VM identity), so no key has to be stored
+- Azure Key Vault can wrap the data key (`key_vault_provider`), and secrets can be read from Key Vault
+- Prices for gpt-5-mini
+
+**Also fixed**
+- An audit log on a network file share (SMB, Azure Files) no longer fails because the share can't set file permissions; it logs a warning. Key files still refuse, since they must be private
+- Benchmark runners pick the model provider by name (`make_provider`), including Azure
+
+**Known limits**
+- Eurycleia keeps a refund to the customer's own payment, once and within the cap, but doesn't judge whether it was deserved; in the live test the model gave 8 such refunds with Eurycleia in place. Asking a person before unusual actions is planned for 0.7.x
+- Only one model has been tested live so far, and the attacks were written by the project
+
 ## 0.6.0
 
 **New name: Eurycleia**

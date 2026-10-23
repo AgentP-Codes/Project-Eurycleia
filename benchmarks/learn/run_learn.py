@@ -112,15 +112,14 @@ def run_ticket(policy: dict, provider, ticket, mode: str, audit: AuditLog, n: in
             "leaked": bool(leaks), "leaks": leaks[:3], "error": error}
 
 
-def make_provider(provider: str, model: str):
-    from eurycleia.llm import AnthropicProvider, GeminiProvider, OpenAIProvider, OpenRouterProvider
-    return {"anthropic": lambda: AnthropicProvider(model, cache=True), "openai": lambda: OpenAIProvider(model),
-            "gemini": lambda: GeminiProvider(model), "openrouter": lambda: OpenRouterProvider(model)}[provider]()
+def make_provider(provider: str, model: str | None):
+    from eurycleia.llm import make_provider as make
+    return make(provider, model, **({"cache": True} if provider == "anthropic" else {}))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--provider", choices=["anthropic", "openai", "gemini", "openrouter"], required=True)
+    ap.add_argument("--provider", choices=["anthropic", "openai", "azure", "gemini", "openrouter"], required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--watch", type=int, default=40, help="tickets to watch")
     ap.add_argument("--check", type=int, default=20, help="fresh tickets with the draft enforced")

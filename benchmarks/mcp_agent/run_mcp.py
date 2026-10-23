@@ -45,10 +45,9 @@ POLICY = ROOT / "demo" / "policy.yaml"
 CUSTOMER = "priya.shah@example.com"
 
 
-def make_provider(provider: str, model: str):
-    from eurycleia.llm import AnthropicProvider, GeminiProvider, OpenAIProvider, OpenRouterProvider
-    return {"anthropic": lambda: AnthropicProvider(model, cache=True), "openai": lambda: OpenAIProvider(model),
-            "gemini": lambda: GeminiProvider(model), "openrouter": lambda: OpenRouterProvider(model)}[provider]()
+def make_provider(provider: str, model: str | None):
+    from eurycleia.llm import make_provider as make
+    return make(provider, model, **({"cache": True} if provider == "anthropic" else {}))
 
 
 def _pythonpath() -> str:
@@ -129,7 +128,7 @@ def run_ticket(provider, sc, config: str) -> dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--provider", choices=["anthropic", "openai", "gemini", "openrouter"])
+    ap.add_argument("--provider", choices=["anthropic", "openai", "azure", "gemini", "openrouter"])
     ap.add_argument("--model")
     ap.add_argument("--configs", default="direct,eurycleia")
     ap.add_argument("--runs", type=int, default=1)

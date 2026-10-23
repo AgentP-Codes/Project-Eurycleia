@@ -117,17 +117,33 @@ def check_url(url: str, sends_secret: bool) -> None:
         raise ValueError(f"refusing to send an API key over plain http to {parts.hostname}; use https")
 
 
+SECRET_HEADERS = ("authorization", "x-api-key", "x-goog-api-key", "api-key", "x-identity-header")
+
+
 def post_json(url: str, body: dict[str, Any], headers: dict[str, str] | None = None, timeout: float = 120,
-              secret_headers: tuple[str, ...] = ("authorization", "x-api-key", "x-goog-api-key")) -> dict[str, Any]:
+              secret_headers: tuple[str, ...] = SECRET_HEADERS) -> dict[str, Any]:
     """POST JSON, return the JSON reply. Raises ProviderError on HTTP or network errors."""
+    return request_json("POST", url, body, headers, timeout, secret_headers)
+
+
+def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 30,
+             secret_headers: tuple[str, ...] = SECRET_HEADERS) -> dict[str, Any]:
+    """GET, return the JSON reply (used for Azure sign-in tokens). Same rules as post_json."""
+    return request_json("GET", url, None, headers, timeout, secret_headers)
+
+
+def request_json(method: str, url: str, body: dict[str, Any] | None, headers: dict[str, str] | None = None,
+                 timeout: float = 120, secret_headers: tuple[str, ...] = SECRET_HEADERS) -> dict[str, Any]:
     headers = {k.lower(): v for k, v in (headers or {}).items()}
     sends_secret = any(headers.get(h) for h in secret_headers)
     check_url(url, sends_secret)
     host = urlsplit(url).hostname or ""
     from . import __version__
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
-        "content-type": "application/json", "accept": "application/json",
-        "user-agent": f"eurycleia/{__version__}", **headers})
+    base = {"accept": "application/json", "user-agent": f"eurycleia/{__version__}"}
+    if body is not None:
+        base["content-type"] = "application/json"
+    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), method=method,
+                                 headers={**base, **headers})
     deadline = _Deadline(timeout)
     handlers: list[Any] = [_NoRedirect(), _HTTP(deadline), _HTTPS(deadline)]
     if is_local(host):

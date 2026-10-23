@@ -166,7 +166,7 @@ class Apps:
                 "email": email, "description": "eurycleia real-app test (made-up data)"})["id"]
             pi = self.stripe.request("POST", "/v1/payment_intents", form_body={
                 "amount": 4900, "currency": "aud", "customer": cus, "confirm": "true",
-                "payment_method": "pm_card_visa", "payment_method_types[]": "card",
+                "payment_method": "pm_card_visa", "return_url": "https://example.com/stripe-test-return",
                 "description": "eurycleia real-app test"})["id"]
         self.payments.add(pi)
         return pi

@@ -155,9 +155,8 @@ class ScriptedAgent:
 def make_provider(provider: str, model: str | None):
     if provider == "scripted":
         return ScriptedAgent()
-    from eurycleia.llm import AnthropicProvider, GeminiProvider, OpenAIProvider, OpenRouterProvider
-    return {"anthropic": lambda: AnthropicProvider(model, cache=True), "openai": lambda: OpenAIProvider(model),
-            "gemini": lambda: GeminiProvider(model), "openrouter": lambda: OpenRouterProvider(model)}[provider]()
+    from eurycleia.llm import make_provider as make
+    return make(provider, model, **({"cache": True} if provider == "anthropic" else {}))
 
 
 # ------------------------------------------------------------------ one ticket
@@ -317,7 +316,7 @@ def main() -> int:
     sub.add_parser("check", help="read-only check of each configured app")
     sub.add_parser("seed", help="create the two made-up CRM contacts")
     r = sub.add_parser("run", help="run the tickets")
-    r.add_argument("--provider", choices=["scripted", "anthropic", "openai", "gemini", "openrouter"],
+    r.add_argument("--provider", choices=["scripted", "anthropic", "openai", "azure", "gemini", "openrouter"],
                    default="scripted")
     r.add_argument("--model", default=None)
     r.add_argument("--configs", default="direct,eurycleia")

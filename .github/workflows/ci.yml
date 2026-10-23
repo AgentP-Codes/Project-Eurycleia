@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, v0.7]
   pull_request:
   schedule:
     - cron: "17 3 * * 1"     # Mondays: re-check the locked libraries for newly published vulnerabilities
@@ -17,14 +17,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # The full set in the public repository. A private copy (development) tests on Linux only: private
+      # repositories have a monthly allowance of minutes, and Windows and macOS minutes count several times over.
       matrix:
         os: [ubuntu-latest]
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        include:
-          - {os: windows-latest, python: "3.12"}
-          - {os: windows-latest, python: "3.14"}
-          - {os: macos-latest, python: "3.12"}
-          - {os: macos-latest, python: "3.14"}
+        python: >-
+          ${{ fromJSON(github.repository == 'AgentP-Codes/Project-Eurycleia'
+          && '["3.10", "3.11", "3.12", "3.13", "3.14"]' || '["3.10", "3.14"]') }}
+        include: >-
+          ${{ fromJSON(github.repository == 'AgentP-Codes/Project-Eurycleia'
+          && '[{"os": "windows-latest", "python": "3.12"}, {"os": "windows-latest", "python": "3.14"},
+          {"os": "macos-latest", "python": "3.12"}, {"os": "macos-latest", "python": "3.14"}]' || '[]') }}
     defaults:
       run:
         shell: bash

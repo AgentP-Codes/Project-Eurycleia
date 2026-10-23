@@ -295,7 +295,7 @@ def run_scenario(provider: Any, sc: Scenario, config: str) -> dict[str, Any]:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--provider", choices=["fake", "anthropic", "openai", "gemini", "openrouter", "ollama"],
+    p.add_argument("--provider", choices=["fake", "anthropic", "openai", "azure", "gemini", "openrouter", "ollama"],
                    default="fake")
     p.add_argument("--model", default=None)
     p.add_argument("--configs", default="no-vault,vault,planner")
@@ -312,13 +312,14 @@ def main() -> None:
     a = p.parse_args()
     global PSEUDONYMS
     PSEUDONYMS = a.pseudonyms
-    from eurycleia.llm import OpenRouterProvider
+    from eurycleia.llm import AzureOpenAIProvider, OpenRouterProvider
 
     from .pricing import BudgetExceeded, Meter, UnknownPrice
     provider = {"fake": lambda: GullibleModel(),
                 "anthropic": lambda: AnthropicProvider(a.model, cache=True),
                 "openai": lambda: OpenAIProvider(a.model), "gemini": lambda: GeminiProvider(a.model),
                 "openrouter": lambda: OpenRouterProvider(a.model),
+                "azure": lambda: AzureOpenAIProvider(a.model),
                 "ollama": lambda: OllamaProvider(a.model)}[a.provider]()
     meter = None
     if a.provider not in ("fake", "ollama"):

@@ -314,6 +314,23 @@ def test_posix_files_are_owner_only(tmp_path):
     assert os.stat(LocalKeyProvider(tmp_path / "k.key").path).st_mode & 0o777 == 0o600
 
 
+
+def test_a_share_without_file_permissions_still_works(tmp_path, monkeypatch, caplog):
+    """Azure Files and other SMB shares refuse chmod: the audit log still opens (with a warning), but a key
+    file, which must be private, is still refused."""
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    from eurycleia import audit
+
+    def refuse(path, mode):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(audit.os, "chmod", refuse)
+    log = audit.AuditLog(tmp_path / "audit.jsonl")
+    assert log.path.exists() and "couldn't make" in caplog.text
+    with pytest.raises(OSError):
+        LocalKeyProvider(tmp_path / "k.key")
+    assert not (tmp_path / "k.key").exists()
+
 class _FakeMsvcrt:
     LK_LOCK, LK_UNLCK = 1, 0
 

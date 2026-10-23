@@ -432,8 +432,11 @@ class Task:
         n = self._check_arguments_and_limits(sink, rule, args)
         recipient_args, recipients = self._check_recipients(sink, rule, args)
         text = _flatten(args)
-        self._check_placeholders(sink, rule, args, text, recipients)
-        self._check_raw_values(sink, text, recipients)
+        self._check_placeholders(sink, rule, args, text, recipients)   # secrets: only where secrets_allowed says
+        # A sink with no recipient argument doesn't say where its data goes (a ticket comment, a record write,
+        # a webhook), so protected data may not leave through it: it can't be shown to reach its owner. Before
+        # 0.7.0 such a sink had no recipients to check, so any destination was allowed.
+        self._check_raw_values(sink, text, recipients if rule.recipient_arg else [""])
         self._check_links(sink, rule, shown, args)
         if self.vault.policy.detect_outbound and recipients:
             from .detect import KINDS, scan_text
@@ -512,10 +515,21 @@ class Task:
                                        f"not a typed value", sink=sink)
 
     def _check_raw_values(self, sink: str, text: str, recipients: list[Any]) -> None:
-        """Raw protected/secret values seen in this task: only to their owner (or internal domains)."""
-        lowered = text.lower()
+        """Raw protected/secret values seen in this task: only to their owner (or internal domains). A value
+        also counts when it's only been reformatted: spaces or punctuation dropped or added ("0255504579",
+        "02-5550-4579"), or an email address written out ("jo at example dot com")."""
+        lowered = unicodedata.normalize("NFKC", text).lower()      # fullwidth or styled digits and letters too
+        spelled = re.sub(r"[\s\[\(]*\bdot\b[\s\]\)]*", ".",
+                         re.sub(r"[\s\[\(]*\bat\b[\s\]\)]*", "@", lowered))
+        squeezed = {re.sub(r"[\W_]", "", lowered), re.sub(r"[\W_]", "", spelled)}
+        digits = _digits_in(lowered)                   # digits, also written as words ("zero two five ...")
         for value, label in self._seen.items():
-            if value.lower() not in lowered:
+            v = value.lower()
+            sv = re.sub(r"[\W_]", "", v)
+            dv = re.sub(r"\D", "", v)
+            numberish = len(dv) >= 8 and len(dv) >= 0.7 * len(re.sub(r"\s", "", v))   # a phone, a card number
+            if v not in lowered and not (len(sv) >= 6 and any(sv in s for s in squeezed)) and \
+                    not (numberish and (dv in digits or dv[::-1] in digits)):
                 continue
             if label.level == "secret":
                 self._decide("act", f"raw secret {label.field!r} in outbound action", sink=sink)
@@ -535,11 +549,14 @@ class Task:
         values = [v for v in self._seen if len(v) >= MIN_MATCH_LEN]
         stand_ins = list(self._pseudo)
         for which, strings in (("shown", _strings(shown)), ("real", _strings(args))):
+            outside: list[str] = []                    # every outside link in this action, checked together too
             for text in strings:
                 for url in _urls(text):
                     if _host_allowed(url, allowed):
                         continue
-                    forms = [(f, re.sub(r"[\W_]", "", f)) for f in _url_forms(url)]
+                    found = [g for f in _url_forms(url, keep_case=True) for g in _link_variants(f)]
+                    outside.extend(found)
+                    forms = [(f, re.sub(r"[\W_]", "", f)) for f in found]
                     hit = any(TOKEN_RE.search(f) for f, _ in forms)
                     if which == "shown":
                         hit = hit or any(p.lower() in f for p in stand_ins for f, _ in forms)
@@ -551,6 +568,15 @@ class Task:
                                            "carries customer data; links may only carry customer data to the "
                                            "company's own sites", sink=sink)
                         return
+            if which == "real" and len(outside) > 1:  # a value split across several links, a word in each
+                joined = " ".join(outside)
+                if any(_in_link(v, joined, re.sub(r"[\W_]", "", joined)) or _every_word(v, joined)
+                       for v in values):
+                    self._decide("act", "customer data split across links to an outside website",
+                                 shown="links in this action point to a website outside the company and between "
+                                       "them carry customer data; links may only carry customer data to the "
+                                       "company's own sites", sink=sink)
+                    return
 
     def _secret_values(self) -> list[str]:
         """The real values of every secret this task has handed out as a placeholder and could unlock (a box
@@ -1005,7 +1031,7 @@ def _strings(value: Any) -> list[str]:
 # Links in text. A link starts at a web scheme (with or without slashes: browsers read "https:host" as
 # "https://host"), any "scheme://", "//", "www.", or a bare domain or IP address followed by a path or query.
 _LINK_START = re.compile(
-    r"(?:https?|ftps?|wss?|file|javascript|vbscript):|[a-z][a-z0-9+.\-]{0,31}://|//|"
+    r"(?:https?|ftps?|wss?|file|javascript|vbscript|mailto):|[a-z][a-z0-9+.\-]{0,31}://|//|"
     r"(?<![\w.@-])www\.|(?<![\w.@-])(?:[a-z0-9-]{1,63}\.){1,8}[a-z]{2,24}(?=[/?#:\\])|"
     r"(?<![\w.@-])\d{1,3}(?:\.\d{1,3}){3}(?=[/?#:\\])", re.I)
 # Where a link can run on past spaces and quotes of the other kind: a quoted HTML attribute or CSS value (the
@@ -1071,11 +1097,45 @@ def _url_host(url: str) -> str | None:
 def _host_allowed(url: str, allowed: list[str]) -> bool:
     host = _url_host(url)
     if host is None:
-        return True
+        # mailto: sends whatever the link carries (subject, body) to its addresses when it's clicked, so it
+        # counts as going to their domains; tel:, data: and the like don't send anything anywhere
+        m = re.match(r"\s*mailto:([^?#]*)", url, re.I)
+        if not m:
+            return True
+        domains = [a.rsplit("@", 1)[-1].strip().lower() for a in urllib.parse.unquote(m.group(1)).split(",")
+                   if "@" in a]
+        return bool(domains) and all(any(d == x or d.endswith("." + x) for x in allowed) for d in domains)
     return bool(host) and any(host == d or host.endswith("." + d) for d in allowed)
 
 
-def _url_forms(url: str) -> list[str]:
+_B64_RUN = re.compile(r"[a-z0-9+/_-]{8,}={0,2}", re.I)
+_HEX_RUN = re.compile(r"(?:[0-9a-f]{2}){4,}", re.I)
+
+
+def _link_variants(form: str) -> list[str]:
+    """A link form, lower-cased, plus what's hidden in it: backwards, and base64 or hex pieces decoded. Decoding
+    is tried on the form as written (case matters for base64) and kept only when it gives readable text."""
+    low = form.lower()
+    out = [low, low[::-1]]
+    for run in _B64_RUN.findall(form):
+        for raw in (run, run.replace("-", "+").replace("_", "/")):
+            try:
+                text = base64.b64decode(raw + "=" * (-len(raw) % 4), validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if text.isprintable():
+                out.append(text.lower())
+    for run in _HEX_RUN.findall(low):
+        try:
+            text = bytes.fromhex(run).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable():
+            out.append(text.lower())
+    return list(dict.fromkeys(out))
+
+
+def _url_forms(url: str, keep_case: bool = False) -> list[str]:
     """A link as written and decoded (percent-encoding, '+' for space, HTML entities), lower-cased."""
     forms, cur = [url], url
     for _ in range(3):
@@ -1084,7 +1144,17 @@ def _url_forms(url: str) -> list[str]:
             break
         forms.append(nxt)
         cur = nxt
-    return [f.lower() for f in forms]
+    return forms if keep_case else [f.lower() for f in forms]
+
+
+_DIGIT_WORDS = {w: str(i) for i, w in enumerate("zero one two three four five six seven eight nine".split())}
+_DIGIT_WORDS["oh"] = "0"
+
+
+def _digits_in(text: str) -> str:
+    """Every digit in `text`, in order, counting digits written as words: so a number can't be slipped past
+    by spacing it out, punctuating it or spelling it."""
+    return re.sub(r"\D", "", re.sub(r"[a-z]+", lambda m: _DIGIT_WORDS.get(m.group(0), " "), text.lower()))
 
 
 def _in_link(value: str, link: str, squeezed_link: str) -> bool:
@@ -1103,6 +1173,14 @@ def _in_link(value: str, link: str, squeezed_link: str) -> bool:
         return False
     found = sum(1 for w in words if re.search(r"(?<![^\W_])" + re.escape(w) + r"(?![^\W_])", link))
     return found >= 2
+
+
+def _every_word(value: str, text: str) -> bool:
+    """Every word (3+ letters) of a value of two or more words stands on its own somewhere in text: a name split
+    across several links, one word each ("?w=Ann" and "?w=Smithers")."""
+    words = {w for w in re.split(r"[\s,]+", value.lower()) if len(w) >= 3 and re.search(r"[^\W\d_]", w)}
+    return len(words) >= 2 and all(
+        re.search(r"(?<![^\W_])" + re.escape(w) + r"(?![^\W_])", text) for w in words)
 
 
 def _source_ref(spec: str) -> tuple[str, str, str] | None:

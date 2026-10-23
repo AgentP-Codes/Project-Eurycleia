@@ -36,7 +36,7 @@ The key (a customer id, account id or employee number) always comes from a trust
 
 Customer data inside a link leaves the company as soon as the link is opened, or as soon as an image in an email loads, whoever the message was sent to. So in any action, a link to a website outside `internal_domains` may not carry a protected or secret value the task has seen, a placeholder, or a stand-in. Links are found in HTML attributes, Markdown, CSS and plain text, and are checked as written and decoded (percent-encoding, `+` for spaces, HTML entities). The action is blocked, not edited.
 
-List other sites here only if links to them may carry customer data, for example your booking provider: `link_domains: [bookings.example]`. Each entry also covers its subdomains. Links that carry no customer data (a help article, say) always work.
+List other sites here only if links to them may carry customer data, for example your booking provider: `link_domains: [bookings.example]`. Each entry also covers its subdomains. Links that carry no customer data (a help article, say) always work. Customer data is found in a link even when it's encoded (base64, hex), written backwards, or split across several links, and a `mailto:` link counts as going to its address's domain.
 
 ## `cache_ttl_seconds`
 
@@ -104,7 +104,7 @@ tasks:
 | `trusted` | Inputs your app must supply to `start_task`. Never derive these from untrusted text |
 | `reads.<source>.key` / `keys` | Which record(s) the task may read. `{name}` is filled from trusted inputs |
 | `reads.<source>.fields` | Which fields are returned. Omit to return all (linter warns) |
-| `sinks.<sink>.recipient_arg` | Argument naming the recipient(s). Lists and comma-separated strings are each checked. Each must be exactly one plain address (`a@b.com` or `Name <a@b.com>`) or one plain id; anything else is blocked. Arguments named `cc`, `bcc`, `reply_to` or `recipients` get the same checks. The sink receives the checked address |
+| `sinks.<sink>.recipient_arg` | Argument naming the recipient(s). A sink without one (a ticket comment, a record write, a webhook) can't carry protected data at all, since it can't be shown to reach the data's owner; secrets still go only where `secrets_allowed` says. Lists and comma-separated strings are each checked. Each must be exactly one plain address (`a@b.com` or `Name <a@b.com>`) or one plain id; anything else is blocked. Arguments named `cc`, `bcc`, `reply_to` or `recipients` get the same checks. The sink receives the checked address |
 | `sinks.<sink>.allowed_recipients` | `source:key.field` (looked up by the vault), `*@source:key.field` (anyone at a domain looked up by the vault, see [Who owns a record](#who-owns-a-record)), a literal address, or a pattern like `*@yourcompany.com` (see [Recipient patterns](#recipient-patterns)) |
 | `sinks.<sink>.secrets_allowed` | Secret fields whose placeholders are swapped for real values at this sink. As a mapping (`{card_number: card}`), each secret may only be passed as that one argument |
 | `sinks.<sink>.args` | The only argument names this sink accepts. Recommended for every sink with a recipient (the linter warns otherwise) |

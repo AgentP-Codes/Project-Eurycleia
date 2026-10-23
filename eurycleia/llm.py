@@ -150,9 +150,11 @@ class OpenAIProvider(_HTTPProvider):
         if not self.model:
             raise ValueError("set a model name (or EURYCLEIA_MODEL)")
 
+    def _headers(self) -> dict[str, str]:
+        return {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
     def _call(self, **body: Any) -> dict[str, Any]:
-        headers = {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        r = self._send(f"{self.base}/chat/completions", {"model": self.model, **body}, headers)
+        r = self._send(f"{self.base}/chat/completions", {"model": self.model, **body}, self._headers())
         u = r.get("usage") or {}
         details = u.get("prompt_tokens_details") or {}
         cached = details.get("cached_tokens") or 0
@@ -221,6 +223,35 @@ class OpenRouterProvider(OpenAIProvider):
             raise ValueError("set OPENROUTER_API_KEY (or pass api_key=)")
         super().__init__(model, api_key=key, base_url="https://openrouter.ai/api/v1", transport=transport,
                          timeout=timeout)
+
+
+class AzureOpenAIProvider(OpenAIProvider):
+    """Models you deployed in Azure OpenAI (or Azure AI Foundry), through Azure's OpenAI-compatible v1 API.
+
+    `model` is your *deployment* name. The endpoint comes from AZURE_OPENAI_ENDPOINT, for example
+    https://my-resource.openai.azure.com. Sign-in: AZURE_OPENAI_API_KEY if set; otherwise the app's own Azure
+    identity (managed identity) or the Azure CLI, so no key needs to be stored at all (see eurycleia.azure).
+    """
+
+    def __init__(self, model: str | None = None, endpoint: str | None = None, api_key: str | None = None,
+                 transport: Transport | None = None, timeout: float = 120, token: Callable[[], str] | None = None):
+        endpoint = (endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
+        if not endpoint.startswith("https://"):
+            raise ValueError("set AZURE_OPENAI_ENDPOINT to your resource's https address "
+                             "(e.g. https://my-resource.openai.azure.com)")
+        model = model or os.environ.get("AZURE_OPENAI_DEPLOYMENT") or setting("MODEL")
+        key = api_key if api_key is not None else os.environ.get("AZURE_OPENAI_API_KEY", "")
+        base = endpoint if endpoint.endswith("/openai/v1") else endpoint + "/openai/v1"
+        super().__init__(model, api_key=key, base_url=base, transport=transport, timeout=timeout)
+        if not key and token is None:
+            from .azure import OPENAI_RESOURCE, AzureToken
+            token = AzureToken(OPENAI_RESOURCE)
+        self.token = token
+
+    def _headers(self) -> dict[str, str]:
+        if self.api_key:
+            return {"api-key": self.api_key}
+        return {"authorization": f"Bearer {self.token()}"} if self.token else {}
 
 
 class GeminiProvider(_HTTPProvider):
@@ -313,6 +344,20 @@ DEFAULT_SYSTEM = (
     "Values like [[vault:card_number:...]] are placeholders for secrets you cannot see; "
     "pass them to tools exactly as given. If a tool says an action is blocked, don't retry it."
 )
+
+
+PROVIDERS = ("anthropic", "openai", "azure", "gemini", "openrouter", "ollama")
+
+
+def make_provider(name: str, model: str | None = None, **kw: Any) -> Provider:
+    """A provider by name: anthropic, openai, azure (Azure OpenAI), gemini, openrouter or ollama."""
+    kinds: dict[str, Callable[..., Provider]] = {
+        "anthropic": lambda: AnthropicProvider(model, **kw), "openai": lambda: OpenAIProvider(model, **kw),
+        "azure": lambda: AzureOpenAIProvider(model, **kw), "gemini": lambda: GeminiProvider(model, **kw),
+        "openrouter": lambda: OpenRouterProvider(model, **kw), "ollama": lambda: OllamaProvider(model, **kw)}
+    if name not in kinds:
+        raise ValueError(f"unknown provider {name!r} (choose from {', '.join(PROVIDERS)})")
+    return kinds[name]()
 
 
 class ToolAgent:
