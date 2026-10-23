@@ -552,3 +552,15 @@ def test_another_providers_key_comes_from_the_vault(tmp_path, monkeypatch):
         "openai", model, api_key=kw["api_key"]))
     live.make(s, mailbox=object(), crm=object(), stripe=object(), slack=None)
     assert got == {"name": "openai", "api_key": "sk-x"}
+
+
+def test_emails_written_in_the_same_clock_tick_are_all_kept(tmp_path, monkeypatch):
+    mb = live.FolderMailbox(tmp_path / "mail", INBOX)
+    monkeypatch.setattr(live.time, "time_ns", lambda: 1_000_000_000)      # a clock that never moves
+    from email.message import EmailMessage
+    for i in range(50):
+        m = EmailMessage()
+        m["From"], m["To"], m["Subject"] = INBOX, INBOX, f"n{i}"
+        m.set_content("x")
+        mb.send_message(m)
+    assert len(mb.unread(limit=100)) == 50

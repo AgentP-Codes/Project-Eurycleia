@@ -48,6 +48,7 @@ import imaplib
 import json
 import os
 import re
+import secrets
 import smtplib
 import ssl
 import sys
@@ -258,7 +259,10 @@ class FolderMailbox:
             src.replace(self.folder / "done" / f"{uid}.eml")
 
     def _write(self, sub: str, msg: EmailMessage) -> str:
-        uid = f"{time.time_ns()}-{os.getpid()}"
+        # Sorted by time (so emails are handled in the order they arrived) and unique even when two are written
+        # in the same clock tick: some systems' clocks only move every few milliseconds, and a name used twice
+        # would quietly replace the first email.
+        uid = f"{time.time_ns():020d}-{os.getpid()}-{secrets.token_hex(6)}"
         tmp = self.folder / sub / f".{uid}.tmp"
         tmp.write_bytes(bytes(msg))
         tmp.replace(self.folder / sub / f"{uid}.eml")        # whole files only: the agent never sees half of one
