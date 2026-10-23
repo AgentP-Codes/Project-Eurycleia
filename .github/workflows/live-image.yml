@@ -31,6 +31,9 @@ jobs:
       - name: Check it starts
         run: docker run --rm -e TEST_INBOX=check.only@gmail.com "$IMAGE:$GITHUB_SHA" report
       - name: Publish
+        # The public repository only builds and checks the image: the published one comes from the development
+        # repository (or your own fork), which owns the package. GitHub compares these names ignoring case.
+        if: github.repository != 'AgentP-Codes/Project-Eurycleia'
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
