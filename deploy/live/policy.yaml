@@ -59,6 +59,7 @@ tasks:
         args: [payment_intent, amount]
         allowed_recipients: ["{payment_intent}"]     # only this customer's own latest payment
         max_calls: 1
+        approval: always                             # and a person says yes first (0.7.1)
       chat.post:
         recipient_arg: channel
         args: [channel, text]

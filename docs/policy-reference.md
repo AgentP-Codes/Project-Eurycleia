@@ -7,6 +7,7 @@ version: 1
 internal_domains: [yourcompany.com]
 link_domains: []    # optional: other websites whose links may carry customer data
 shared_email_domains: []   # optional: more email services that are never a business customer's own domain
+company_domains: []        # optional, strict: the only domains owner_domain may ever name
 cache_ttl_seconds: 300
 detect_outbound: true
 sources:  {...}
@@ -54,7 +55,7 @@ What the vault may read. Each source maps to a connector you pass to `Vault(sour
 | --- | --- | --- |
 | `owner` | `company`, or the name of a trusted input that identifies the record's owner (e.g. `customer_id`) | `company` |
 | `owner_contact` | Field holding the owner's verified destination (e.g. `email`). Each owner needs this or `owner_domain` on at least one source | – |
-| `owner_domain` | For a business customer: field holding the company's own email domain (e.g. `domain`). Its data may go to anyone at exactly that domain. A domain that looks like a shared email service is refused: any domain containing a known provider's name (gmail, yahoo, hotmail, outlook, bigpond and about a hundred more, so also yahoo.com.au or hotmail.fr), bare endings like `co.uk`, and anything in `shared_email_domains`. No such list is complete: only fill this field from records you've checked, such as signed contracts. Some real companies share a provider's name (verizon.com, telstra.com); their data then goes only to their `owner_contact` address | – |
+| `owner_domain` | For a business customer: field holding the company's own email domain (e.g. `domain`). Its data may go to anyone at exactly that domain. A domain that looks like a shared email service is refused: any domain containing a known provider's name (gmail, yahoo, hotmail, outlook, bigpond and about a hundred more, so also yahoo.com.au or hotmail.fr), bare endings like `co.uk`, and anything in `shared_email_domains`. No such list is complete: only fill this field from records you've checked, such as signed contracts. Some real companies share a provider's name (verizon.com, telstra.com); their data then goes only to their `owner_contact` address. For the strict setting, list your business customers' domains under the top-level `company_domains`: then only those exact domains are accepted, whatever the record says | – |
 | `share_internally` | `false`: this source's protected data goes only to its owner, not to anyone at `internal_domains`. Use it for staff records | `true` |
 | `owner_field` | Field holding the owner's id when it isn't the record key (e.g. an invoice's `supplier_id`) | record key |
 | `fields` | `field: level` for each field | – |
@@ -109,7 +110,7 @@ tasks:
 | `sinks.<sink>.secrets_allowed` | Secret fields whose placeholders are swapped for real values at this sink. As a mapping (`{card_number: card}`), each secret may only be passed as that one argument |
 | `sinks.<sink>.args` | The only argument names this sink accepts. Recommended for every sink with a recipient (the linter warns otherwise) |
 | `sinks.<sink>.risk` | `low` (default): allow. `medium`: allow, but flag for review (`on_flag` callback, `eurycleia review`). `high`: a human must approve |
-| `sinks.<sink>.approval` | `always` sends every call to your `approver`; `never` (default). Set automatically by `risk: high` |
+| `sinks.<sink>.approval` | `always` sends every call to your `approver`; `never` (default). Set automatically by `risk: high`. The approver gets an `ApprovalRequest` whose `facts` are Eurycleia's own record of the action; `eurycleia.approvals.SlackApprover` asks a person in Slack. A refused call doesn't count towards `max_calls` |
 | `sinks.<sink>.max_calls` | Per-task limit |
 | `sinks.<sink>.invalidates` | Sources to drop from the cache after this action |
 

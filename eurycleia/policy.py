@@ -104,6 +104,7 @@ class Policy:
     internal_domains: list[str] = field(default_factory=list)
     link_domains: list[str] = field(default_factory=list)   # other sites that may carry customer data in links
     shared_email_domains: list[str] = field(default_factory=list)   # never a business customer's own domain
+    company_domains: list[str] = field(default_factory=list)   # if set, the only domains owner_domain may name
     cache_ttl_seconds: float = 300
     detect_outbound: bool = False       # also block outbound values that look like secrets (cards, TFNs, keys)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -135,7 +136,9 @@ class Policy:
         _str_list(raw.get("internal_domains"), "internal_domains")
         _str_list(raw.get("link_domains"), "link_domains")
         _str_list(raw.get("shared_email_domains"), "shared_email_domains")
+        _str_list(raw.get("company_domains"), "company_domains")
         known = {"sources", "tasks", "tools", "internal_domains", "link_domains", "shared_email_domains",
+                 "company_domains",
                  "cache_ttl_seconds", "version", "upstream", "detect_outbound"}
         if extra := set(raw) - known:
             raise PolicyError(f"unknown top-level keys: {sorted(extra)}")
@@ -276,6 +279,8 @@ class Policy:
                    internal_domains=[d.lower() for d in raw.get("internal_domains") or []],
                    link_domains=[d.strip().lower().lstrip("*.") for d in raw.get("link_domains") or []],
                    shared_email_domains=[str(d) for d in raw.get("shared_email_domains") or []],
+                   company_domains=[str(d).strip().lower().lstrip("@").rstrip(".")
+                                    for d in raw.get("company_domains") or []],
                    cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 300)),
                    detect_outbound=bool(raw.get("detect_outbound", False)), raw=raw)
 

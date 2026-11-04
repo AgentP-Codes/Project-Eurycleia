@@ -161,3 +161,32 @@ test("many tasks at once", async () => {
   }));
   assert.ok(results.every(Boolean));
 });
+
+test("a fake server's endless or unsigned reply is refused without reading it all", async () => {
+  const { createServer } = await import("node:http");
+  const big = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "x-eurycleia-auth": "a".repeat(64) });
+    const chunk = Buffer.alloc(64 * 1024, 0x20);
+    let sent = 0;
+    const pump = () => {
+      while (sent < 64 * 1024 * 1024) {           // 64 MB, far over the limit
+        sent += chunk.length;
+        if (!res.write(chunk)) return res.once("drain", pump);
+      }
+      res.end();
+    };
+    pump();
+    res.on("error", () => {});
+  });
+  const unsigned = createServer((req, res) => { res.writeHead(200); res.end("{}"); });
+  await new Promise((r) => big.listen(0, "127.0.0.1", r));
+  await new Promise((r) => unsigned.listen(0, "127.0.0.1", r));
+  try {
+    const a = new Eurycleia({ url: `http://127.0.0.1:${big.address().port}`, token: "t", maxReplyBytes: 1024 * 1024 });
+    await assert.rejects(a.startTask("support_reply"), /too large/);
+    const b = new Eurycleia({ url: `http://127.0.0.1:${unsigned.address().port}`, token: "t" });
+    await assert.rejects(b.startTask("support_reply"), /couldn't prove it is eurycleia/);
+  } finally {
+    big.closeAllConnections?.(); big.close(); unsigned.close();
+  }
+});

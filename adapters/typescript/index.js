@@ -46,9 +46,10 @@ export class Eurycleia {
   #token;
   #handlers = new Map();
   #timeoutMs;
+  #maxReplyBytes;
 
   /** Use `Eurycleia.connect()` unless you pass the address and token yourself. */
-  constructor({ url, token, timeoutMs = 600_000 }) {
+  constructor({ url, token, timeoutMs = 600_000, maxReplyBytes = 16 * 1024 * 1024 }) {
     const u = new URL(url);
     if (u.protocol !== "http:" || !LOCAL_HOSTS.has(u.hostname)) {
       throw new EurycleiaError("eurycleia api only runs on this computer (http://127.0.0.1)");
@@ -58,6 +59,7 @@ export class Eurycleia {
     this.#url = u.origin;
     this.#token = token;
     this.#timeoutMs = timeoutMs;
+    this.#maxReplyBytes = maxReplyBytes;
   }
 
   /** Connect using EURYCLEIA_URL / EURYCLEIA_TOKEN, or the file `eurycleia api` writes. */
@@ -113,7 +115,7 @@ export class Eurycleia {
     } catch (e) {
       throw new EurycleiaError(`can't reach eurycleia at ${this.#url}: ${e.cause?.code || e.name}`);
     }
-    const raw = Buffer.from(await res.arrayBuffer());
+    const raw = await this.#readReply(res);
     const expected = createHmac("sha256", this.#token)
       .update(["TV1-RESPONSE", nonce, String(res.status), sha256(raw)].join("\n")).digest();
     const got = Buffer.from(res.headers.get("x-eurycleia-auth") || "", "hex");
@@ -130,6 +132,43 @@ export class Eurycleia {
     }
     if (!res.ok) throw new EurycleiaError(data.error || `eurycleia replied ${res.status}`, res.status);
     return data;
+  }
+
+  // The reply has to be read whole before its signature can be checked (the signature covers all of it), so
+  // something else listening on the port could try to exhaust memory with an endless reply. A reply without
+  // a well-formed signature isn't read at all, and none is read past maxReplyBytes (16 MB by default).
+  async #readReply(res) {
+    const sig = res.headers.get("x-eurycleia-auth") || "";
+    const refuse = (why) => {
+      res.body?.cancel().catch(() => {});
+      throw new EurycleiaError(`the server at ${this.#url} ${why}; not trusting its reply`, res.status);
+    };
+    if (!/^[0-9a-f]{64}$/i.test(sig)) {
+      if (res.status === 401) {
+        res.body?.cancel().catch(() => {});
+        throw new EurycleiaError(
+          "eurycleia refused the request: wrong token, or this computer's clock is off by more than 2 minutes", 401);
+      }
+      refuse("couldn't prove it is eurycleia");
+    }
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > this.#maxReplyBytes) refuse("sent a reply that is too large");
+    const chunks = [];
+    let size = 0;
+    if (res.body) {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > this.#maxReplyBytes) {
+          reader.cancel().catch(() => {});
+          refuse("sent a reply that is too large");
+        }
+        chunks.push(value);
+      }
+    }
+    return Buffer.concat(chunks.map((c) => Buffer.from(c)));
   }
 
   // Runs a task operation, performing any approved actions it hands back.

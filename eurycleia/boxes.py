@@ -17,8 +17,9 @@ Two tiers:
            (plus the bank's) gets it out.
 
 Opening a high box asks the holder's key service for the private key. That
-service can require a person to approve, and the key is kept in memory only
-for a short window (`open_ttl`), then wiped. Every deposit, opening and
+service can require a person to approve. The key is kept in memory only for
+repeat reveals of the same item in the same task, for a short window
+(`open_ttl`), then wiped: one approval never covers another item or task. Every deposit, opening and
 withdrawal is written to a per-box log, each entry chained to the last with a
 keyed MAC (so rewriting it needs the vault key). `compact_logs` archives old entries. `forget_holder` deletes a
 holder's boxes; an optional company recovery key lets you restore access if a
@@ -26,7 +27,7 @@ holder loses theirs.
 
 Performance: crypto is microseconds per item; boxes are rows, so millions of
 boxes cost what millions of rows cost. The slow part is fetching a holder's
-private key (a network call or a human approval), which is cached per open.
+private key (a network call or a human approval), once per item per task.
 """
 
 from __future__ import annotations
@@ -78,6 +79,57 @@ class BoxLocked(EurycleiaError):
     """A high-tier box couldn't be opened: the holder's key was unavailable or access was denied."""
 
 
+class BoxRollback(EurycleiaError):
+    """The box database is older than the rollback guard says it should be: someone restored an old copy."""
+
+
+class RollbackGuard(Protocol):
+    """Somewhere OUTSIDE the box database that remembers how far each box's log has got. If the database is
+    replaced with an older copy (bringing back forgotten holders, hiding reveals from the log), its logs fall
+    behind these marks and every use of an affected box is refused."""
+    def high_water(self, box: str) -> int | None: ...
+
+    def advance(self, marks: dict[str, int]) -> None: ...
+
+
+class FileRollbackGuard:
+    """A small SQLite file of box id -> latest log entry. Keep it on different storage from the box database
+    (another disk, volume or account), or it rolls back with it. Box ids are keyed fingerprints: no names."""
+
+    def __init__(self, path: str | Path):
+        target = str(private_file(Path(path).resolve()))
+        self.conn = sqlite3.connect(target, check_same_thread=False, isolation_level=None, timeout=30)
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        self._lock = threading.Lock()
+        with self._lock:
+            _retry_locked(lambda: self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS marks (box TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID"))
+
+    def high_water(self, box: str) -> int | None:
+        with self._lock:
+            row = self.conn.execute("SELECT seq FROM marks WHERE box=?", (box,)).fetchone()
+        return row[0] if row else None
+
+    def advance(self, marks: dict[str, int]) -> None:
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                for box, seq in marks.items():         # only ever forwards, whatever order commits land in
+                    self.conn.execute("INSERT INTO marks (box, seq) VALUES (?, ?) ON CONFLICT (box) DO UPDATE "
+                                      "SET seq = MAX(seq, excluded.seq)", (box, seq))
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+
+    def boxes(self) -> list[tuple[str, int]]:
+        with self._lock:
+            return list(self.conn.execute("SELECT box, seq FROM marks"))
+
+    def close(self) -> None:
+        self.conn.close()
+
+
 def is_box_ref(value: Any) -> bool:
     return isinstance(value, str) and bool(REF_RE.match(value))
 
@@ -98,6 +150,7 @@ class OpenRequest:
     box_id: str
     task: Any
     reason: str
+    item: str = ""             # which item this opening is for (each approval covers one item in one task)
 
 
 class HolderKeys(Protocol):
@@ -200,6 +253,8 @@ class BoxDB:
 
     def __init__(self, url: str | Path):
         self._lock = threading.RLock()
+        self._marks: dict[str, int] = {}               # log entries written in the open transaction
+        self.on_commit: Callable[[dict[str, int]], None] | None = None
         url = str(url)
         if url.startswith(("postgresql://", "postgres://")):
             import psycopg  # optional: pip install "eurycleia[postgres]"
@@ -314,8 +369,11 @@ class _Tx:
         return self.db
 
     def __exit__(self, exc_type, exc, tb):
+        marks, self.db._marks = self.db._marks, {}
         try:
             self.db.conn.execute("ROLLBACK" if exc_type else "COMMIT")
+            if not exc_type and marks and self.db.on_commit:
+                self.db.on_commit(marks)               # after the commit: the guard never runs ahead of the data
         finally:
             self.db._lock.release()
         return False
@@ -352,8 +410,11 @@ class BoxStore:
     def __init__(self, db: BoxDB | str | Path, vault_keys: KeyProvider, holder_keys: HolderKeys | None = None,
                  recovery_public_key: bytes | None = None, open_ttl: float = 300,
                  tiers: dict[str, str] | None = None, clock: Callable[[], float] = time.time,
-                 _allow_legacy: bool = False):
+                 rollback_guard: RollbackGuard | str | Path | None = None, _allow_legacy: bool = False):
         self.db = db if isinstance(db, BoxDB) else BoxDB(db)
+        self.guard = FileRollbackGuard(rollback_guard) if isinstance(rollback_guard, (str, Path)) else rollback_guard
+        if self.guard is not None:
+            self.db.on_commit = self.guard.advance
         if self.db.legacy and not _allow_legacy:
             raise BoxFormatError("this box database uses the taskvault 0.4 format. Upgrade it once with:\n"
                                  "  eurycleia boxes migrate --db <database> --key <vault key>")
@@ -361,7 +422,10 @@ class BoxStore:
         self.recovery_public_key = recovery_public_key
         self.open_ttl, self.clock = open_ttl, clock
         self.tiers = {"secret": "high", "protected": "normal", "normal": "normal", **(tiers or {})}
-        self._open: dict[str, tuple[bytes, float]] = {}      # holder -> (private key, expires)
+        # (holder, task, item) -> (private key, expires): an approval covers repeat reveals of one item in one task,
+        # never another item, another task, or a reveal with no task (before 0.7.1 it covered every reveal of the
+        # holder's boxes for open_ttl seconds)
+        self._open: dict[tuple[str, str, str], tuple[bytes, float]] = {}
         self._lock = threading.Lock()
 
     # --------------------------------------------------------------- helpers
@@ -595,6 +659,7 @@ class BoxStore:
         return out or None
 
     def _read_normal(self, box: str, item: str, task: Any) -> Any:
+        self._not_rolled_back(box)
         rows = self.db.execute("SELECT blob FROM tvb_items WHERE box=? AND item=?", (_b(box), bytes.fromhex(item)))
         if not rows:
             raise KeyError("item not found")
@@ -609,13 +674,14 @@ class BoxStore:
         if not m:
             raise ValueError("not a box reference")
         box, item = m.groups()
+        self._not_rolled_back(box)                         # before anyone is asked to approve
         holder, tier = self._holder_of(box)
         rows = self.db.execute("SELECT blob FROM tvb_items WHERE box=? AND item=?", (_b(box), bytes.fromhex(item)))
         if not rows:
             raise KeyError("item not found (it may have been forgotten)")
         aad = f"{box}|{item}"
         inner = self._unlock_vault(rows[0][0], aad)                  # key 1: the vault's
-        private = self._holder_private(holder, box, task, reason)    # key 2: the holder's
+        private = self._holder_private(holder, box, task, reason, item)    # key 2: the holder's
         try:
             plain = _open_from(private, inner, aad.encode())
         except Exception as e:  # noqa: BLE001
@@ -624,24 +690,27 @@ class BoxStore:
         self._log(box, "reveal", {"item": item, "task": task, "reason": reason})
         return json.loads(plain)
 
-    def _holder_private(self, holder: str, box: str, task: Any, reason: str) -> bytes:
+    def _holder_private(self, holder: str, box: str, task: Any, reason: str, item: str = "") -> bytes:
         now = self.clock()
+        slot = (holder, repr(task), item) if task is not None and item else None
         with self._lock:
-            cached = self._open.get(holder)
-            if cached and cached[1] > now:
+            for k in [k for k, (_key, until) in self._open.items() if until <= now]:
+                del self._open[k]                              # expired keys don't linger in memory
+            cached = self._open.get(slot) if slot else None
+            if cached:
                 return cached[0]
-            self._open.pop(holder, None)
         if self.holder_keys is None:
             raise BoxLocked("no holder key service configured")
         try:
-            key = self.holder_keys.private_key(OpenRequest(holder, box, task, reason))
+            key = self.holder_keys.private_key(OpenRequest(holder, box, task, reason, item))
         except KeyUnavailable as e:
             raise BoxLocked(str(e)) from e
         if not key:
             self._log(box, "open_denied", {"task": task, "reason": reason})
             raise BoxLocked(f"{holder.split(':')[0]} key holder did not allow this box to be opened")
-        with self._lock:
-            self._open[holder] = (key, now + self.open_ttl)
+        if slot:
+            with self._lock:
+                self._open[slot] = (key, now + self.open_ttl)
         self._log(box, "opened", {"task": task, "for_seconds": self.open_ttl})
         return key
 
@@ -672,7 +741,8 @@ class BoxStore:
         unforget_holder() if they genuinely return."""
         fp = self._macb(16, "holder", holder)
         with self._lock:
-            self._open.pop(holder, None)
+            for k in [k for k in self._open if k[0] == holder]:
+                del self._open[k]
         n = 0
         with self.db.transaction() as db:
             boxes = sorted(bytes(r[0]) for r in db.execute("SELECT box FROM tvb_boxes WHERE holder=?", (fp,)))
@@ -739,10 +809,32 @@ class BoxStore:
         db.lock(box)
         last = db.execute("SELECT seq, mac FROM tvb_log WHERE box=? ORDER BY seq DESC LIMIT 1", (_b(box),))
         seq, prev = (last[0][0] + 1, bytes(last[0][1])) if last else (0, ZERO)
+        self._not_rolled_back(box, seq - 1)                # raising here undoes the whole transaction
         ts, d = round(self.clock(), 3), _jd(detail)
         mac = self._chain(self._subkey(b"box-log"), box, seq, ts, event, d, prev)
         db.execute("INSERT INTO tvb_log (box, seq, ts, event, detail, mac) VALUES (?,?,?,?,?,?)",
                    (_b(box), seq, ts, event, d, mac))
+        db._marks[box] = seq
+
+    def _not_rolled_back(self, box: str, head: int | None = None) -> None:
+        """Refuse a box whose log is behind the rollback guard's mark (an older copy of the database)."""
+        if self.guard is None:
+            return
+        if head is None:
+            last = self.db.execute("SELECT MAX(seq) FROM tvb_log WHERE box=?", (_b(box),))
+            head = last[0][0] if last and last[0][0] is not None else -1
+        mark = self.guard.high_water(box)
+        if mark is not None and head < mark:
+            raise BoxRollback("this box database is older than its rollback guard: it looks like an old copy "
+                              "was restored. Nothing in this box is used until that's investigated "
+                              "(see `eurycleia boxes check-rollback`)")
+
+    def check_rollback(self) -> list[str]:
+        """Every box whose log is behind the rollback guard (empty if all is well, or there's no guard)."""
+        if self.guard is None or not hasattr(self.guard, "boxes"):
+            return []
+        heads = {_s(b): n for b, n in self.db.execute("SELECT box, MAX(seq) FROM tvb_log GROUP BY box")}
+        return sorted(box for box, mark in self.guard.boxes() if heads.get(box, -1) < mark)
 
     def log(self, box: str) -> list[dict[str, Any]]:
         rows = self.db.execute("SELECT seq, ts, event, detail, mac FROM tvb_log WHERE box=? ORDER BY seq", (_b(box),))

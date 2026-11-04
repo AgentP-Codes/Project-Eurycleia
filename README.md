@@ -11,7 +11,7 @@
 >
 > Provided "as is", without warranty of any kind, under the [AGPL-3.0 licence](LICENSE). Its features describe design goals, not guarantees. Please read the full [Disclaimer](#disclaimer) before using it.
 
-**Status:** v0.7.0 beta · Feedback, issues and ideas are very welcome.
+**Status:** v0.7.1 beta · Feedback, issues and ideas are very welcome.
 
 **How this was built:** Eurycleia was designed and directed by @AgentP-Codes. Much of the code, tests and documentation were written with the help of Claude (Anthropic's AI). The live model tests were run by the project using its own API keys. All the code is open for review.
 
@@ -39,6 +39,8 @@ data, knows who it really belongs to, and keeps an attacker away from the agent'
 
 ## What's new in 0.7
 
+- **0.7.1: approvals that show the facts.** When a person is asked to approve an action (a refund, say), they see what Eurycleia knows (whose payment, whether the recipient came from trusted data, whether the task read outside content) before what the AI said. A ready-made Slack approver waits for a ✅ or ❌; no answer means no. The live test now has every refund approved by a person.
+- **0.7.1: nine security fixes**, reported privately by an outside reviewer: links written backwards, more free-mail services, a guard against restoring an old copy of the box database, the local API under slow connections, and more. Upgrading is recommended. See the [changelog](CHANGELOG.md).
 - **Tested live, not simulated:** a real AI model answering a made-up company's support email, connected to real test accounts in HubSpot, Stripe and Slack, on Azure. Of 124 emails (63 attacks), the model alone leaked data in 19, and in none with Eurycleia, while every normal request was still handled. See [live test results](docs/live-test-results.md).
 - **Harder attacks:** 48 new attacks aimed at each protection, not just at the model.
 - **Catches reworded data:** personal details are still caught when spacing, punctuation or look-alike characters change, or a number is written backwards or in words.
@@ -177,7 +179,7 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 
 ## How it's tested
 
-- **About 860 automated tests,** including randomised (fuzz) tests, on Linux with Python 3.10 to 3.14, Windows and macOS.
+- **About 870 automated tests,** including randomised (fuzz) tests, on Linux with Python 3.10 to 3.14, Windows and macOS.
 - **Stress and load tests:** 2,000 tasks run at once from Python and Node; over 100,000 random API requests; long runs to catch memory leaks; large messages and databases. Run it yourself with `python -m demo.stress`.
 - **Reviews by separate AI agents** that tried to break the new code, plus external security reports. Every problem found is fixed and has a test.
 - **A public benchmark:** [AgentDojo](benchmarks/agentdojo/README.md), replayed without a model (see above).
@@ -228,7 +230,7 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 
 ## Limitations
 
-- **Allowed actions aren't judged for content.** A fooled agent can still send the right customer a wrong message, or give a refund nobody asked for (kept to that customer's own payment and within the cap). In the live test this happened 8 times in 124 emails. Asking a person before unusual actions is planned.
+- **Allowed actions aren't judged for content.** A fooled agent can still send the right customer a wrong message, or give a refund nobody asked for (kept to that customer's own payment and within the cap). In the 0.7.0 live test this happened 8 times in 124 emails; 0.7.1 lets you require a person's approval for such actions (`approval: always`).
 - **Reworded or encoded data** can sometimes reach a recipient the task already allows. Planner mode is designed to close this.
 - **Your app must supply trusted inputs honestly.** If "which customer is this?" comes from the email text, the protections don't hold.
 - **Setup is a draft.** Review what it writes, especially low-confidence fields listed in `setup-report.md`.

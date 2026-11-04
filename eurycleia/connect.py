@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ._names import MARKS, home_dir
+from .audit import owner_only
 from .errors import EurycleiaError
 from .policy import Policy
 
@@ -94,15 +96,72 @@ def _load(path: Path, fmt: str) -> dict[str, Any]:
     return data
 
 
-def _save(path: Path, fmt: str, data: dict[str, Any]) -> None:
+def _yaml_block(lines: list[str], start: int, indent: int) -> int:
+    """The line after the block that starts at `start`: the next line indented `indent` or less that isn't
+    blank or a comment (comments just above the next entry stay with it)."""
+    end = start + 1
+    last = start + 1
+    while end < len(lines):
+        stripped = lines[end].strip()
+        if stripped and not stripped.startswith("#"):
+            if len(lines[end]) - len(lines[end].lstrip()) <= indent:
+                break
+            last = end + 1
+        end += 1
+    return last
+
+
+def _yaml_edit(text: str, data: dict[str, Any], section: str, names: list[str]) -> str | None:
+    """Rewrite only the named servers' entries under `section`, leaving every other line (comments,
+    other servers, other settings, blank lines) exactly as it was. None if the file's layout is one this
+    can't edit safely (flow style, anchors, tabs...), in which case the caller writes the whole file."""
+    import yaml
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    head = [i for i, ln in enumerate(lines) if re.match(rf"{re.escape(section)}\s*:\s*(#.*)?$", ln.rstrip("\r\n"))]
+    if len(head) != 1:
+        return None
+    for name in names:
+        start = head[0] + 1
+        end = _yaml_block(lines, head[0], 0)
+        child = [i for i in range(start, end) if lines[i].strip() and not lines[i].lstrip().startswith("#")]
+        if not child:
+            return None
+        indent = len(lines[child[0]]) - len(lines[child[0]].lstrip(" "))
+        if indent == 0 or "\t" in lines[child[0]][:indent]:
+            return None
+        at = [i for i in child if len(lines[i]) - len(lines[i].lstrip(" ")) == indent
+              and re.match(rf"\s*['\"]?{re.escape(name)}['\"]?\s*:\s*(#.*)?$", lines[i].rstrip("\r\n"))]
+        if len(at) != 1:
+            return None
+        stop = _yaml_block(lines, at[0], indent)
+        dumped = yaml.safe_dump({name: data[section][name]}, sort_keys=False, allow_unicode=True,
+                                default_flow_style=False, width=10**6)
+        newline = "\r\n" if lines[at[0]].endswith("\r\n") else "\n"
+        block = [" " * indent + ln + newline for ln in dumped.splitlines()]
+        lines[at[0]:stop] = block
+    out = "".join(lines)
+    try:
+        if yaml.safe_load(out) != data:          # anything unexpected: don't risk it
+            return None
+    except yaml.YAMLError:
+        return None
+    return out
+
+
+def _save(path: Path, fmt: str, data: dict[str, Any], section: str = "", names: list[str] | None = None) -> None:
     """Replace the settings file all at once, keeping its permissions (it may hold API keys) and its
-    start-of-file marker, and writing to the real file if the path is a symbolic link."""
+    start-of-file marker, and writing to the real file if the path is a symbolic link. In a YAML file only the
+    changed servers' lines are rewritten, so the person's comments and layout are kept."""
     real = path.resolve()
     if fmt == "json":
         text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     else:
         import yaml
-        text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        old = real.read_bytes().decode("utf-8-sig") if real.exists() else ""
+        edited = _yaml_edit(old, data, section, names or []) if old and section else None
+        text = edited if edited is not None else yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     raw = text.encode("utf-8")
     if real.exists() and real.read_bytes().startswith(b"\xef\xbb\xbf"):
         raw = b"\xef\xbb\xbf" + raw
@@ -127,12 +186,32 @@ def _state_path() -> Path:
 
 def _state() -> dict[str, Any]:
     p = _state_path()
-    return json.loads(p.read_text()) if p.exists() else {}
+    if not p.exists():
+        return {}
+    if os.name != "nt" and stat.S_IMODE(p.stat().st_mode) & 0o077:   # made by an earlier version: lock it now
+        owner_only(p)
+    return json.loads(p.read_text())
 
 
 def _save_state(state: dict[str, Any]) -> None:
-    home().mkdir(parents=True, exist_ok=True)
-    _state_path().write_text(json.dumps(state, indent=2))
+    """connections.json keeps a copy of each agent's original server settings, which can hold API keys, so it's
+    private to this user (0600, or an owner-only access list on Windows) from the moment it exists, and replaced
+    all at once. Before 0.7.1 it was created with the default permissions, usually readable by everyone."""
+    folder = home()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = _state_path()
+    tmp = path.with_name(f".{path.name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(json.dumps(state, indent=2).encode())
+            f.flush()
+            os.fsync(f.fileno())
+        owner_only(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ------------------------------------------------------------------ commands
@@ -197,7 +276,7 @@ def connect(agent: str, policy: str | os.PathLike[str], task: str, trusted: list
         entry["command"], entry["args"] = sys.executable, wrapped
         done.append(name)
     record.update(connected=record.get("connected") or time.time(), audit=str(audit_path.resolve()))
-    _save(path, fmt, data)
+    _save(path, fmt, data, section, done)
     _save_state(state)
     return done
 
@@ -222,6 +301,7 @@ def set_mode(enforce: bool) -> list[str]:
         fmt, section = AGENTS.get(rec.get("agent", ""), ("json", "mcpServers"))
         path = Path(p)
         data = _load(path, fmt)
+        before = len(changed)
         for name in rec["servers"]:
             entry = (data.get(section) or {}).get(name)
             if not entry or not _wrapped(entry):
@@ -234,7 +314,7 @@ def set_mode(enforce: bool) -> list[str]:
             if head + tail != args:
                 entry["args"] = head + tail
                 changed.append(name)
-        _save(path, fmt, data)
+        _save(path, fmt, data, section, changed[before:])
         rec["mode"] = "enforce" if enforce else "watch"
     _save_state(state)
     return changed
@@ -253,12 +333,14 @@ def disconnect(agent: str | None = None, config: str | None = None) -> list[str]
         fmt, section = AGENTS.get(rec["agent"], ("json", "mcpServers"))
         path = Path(p)
         data = _load(path, fmt)
+        here = []
         for name, original in rec["servers"].items():
             entry = (data.get(section) or {}).get(name)
             if entry and _wrapped(entry):
                 entry["command"], entry["args"] = original["command"], original["args"]
-                restored.append(name)
-        _save(path, fmt, data)
+                here.append(name)
+        restored += here
+        _save(path, fmt, data, section, here)
         del state[p]
     _save_state(state)
     return restored

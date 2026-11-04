@@ -19,8 +19,9 @@ export class EurycleiaError extends Error {
 }
 
 export class Eurycleia {
-  constructor(options: { url: string; token: string; timeoutMs?: number });
-  static connect(options?: { timeoutMs?: number }): Promise<Eurycleia>;
+  /** maxReplyBytes: the largest reply accepted from eurycleia (default 16 MB). */
+  constructor(options: { url: string; token: string; timeoutMs?: number; maxReplyBytes?: number });
+  static connect(options?: { timeoutMs?: number; maxReplyBytes?: number }): Promise<Eurycleia>;
   /** Run an approved action in your code. `args` holds REAL values: don't log them or give them to the model. */
   onAction(sink: string, handler: ActionHandler): this;
   /** `trusted` must come from your app (e.g. the logged-in customer), never from the model. */

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 from collections import Counter
 from importlib import resources
@@ -65,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--db", default=f"{STORE}/boxes.db", help="SQLite path or postgresql:// URL")
     common.add_argument("--key", required=True, help="the vault's key file")
     common.add_argument("--holder-keys", default=f"{STORE}/holder-keys", help="folder of holder keys")
+    common.add_argument("--rollback-guard", default=os.environ.get("EURYCLEIA_ROLLBACK_GUARD"),
+                        help="file (on other storage) that catches an old copy of the box database being restored")
     b = bsub.add_parser("holder", parents=[common], help="create a key for a department, customer or client")
     b.add_argument("--type", required=True, choices=["department", "customer", "client"])
     b.add_argument("--id", required=True)
@@ -90,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     b = bsub.add_parser("archive", parents=[common], help="open and check a log archive")
     b.add_argument("file")
     bsub.add_parser("migrate", parents=[common], help="upgrade a taskvault 0.4 box database")
+    bsub.add_parser("check-rollback", parents=[common], help="check the box database against its rollback guard")
 
     s = sub.add_parser("init", help="create a starter policy and fixtures from a template")
     s.add_argument("--template", choices=["support", "finance"], default="support")
@@ -117,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--eurycleia-connected", action="store_true", help=argparse.SUPPRESS)  # marker from `connect`
     s.add_argument("--boxes", default=None, help="deposit box database for sources with storage: boxes")
     s.add_argument("--holder-keys", default=f"{STORE}/holder-keys")
+    s.add_argument("--rollback-guard", default=os.environ.get("EURYCLEIA_ROLLBACK_GUARD"),
+                   help="file (on other storage) that catches an old copy of the box database being restored")
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- command to start the upstream MCP server")
 
     s = sub.add_parser("audit", help="verify or read an audit log")
@@ -223,6 +229,7 @@ def _box_store(a: argparse.Namespace):
     from .boxes import BoxStore, LocalHolderKeys
     from .crypto import LocalKeyProvider
     return BoxStore(a.db, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys),
+                    rollback_guard=getattr(a, "rollback_guard", None),
                     _allow_legacy=getattr(a, "boxes_cmd", "") == "migrate")
 
 
@@ -309,6 +316,15 @@ def cmd_boxes(a: argparse.Namespace) -> int:
         for e in entries:
             print(f"{e['box']}  {e['seq']:>4}  {e['ts']:.0f}  {e['event']:<12} {e['detail']}")
         print(f"{len(entries)} entries, archive intact")
+    elif a.boxes_cmd == "check-rollback":
+        if store.guard is None:
+            print("no rollback guard set (--rollback-guard or EURYCLEIA_ROLLBACK_GUARD)", file=sys.stderr)
+            return 2
+        behind = store.check_rollback()
+        for box in behind:
+            print(f"{box}  is behind its rollback guard")
+        print(f"{len(behind)} boxes look restored from an older copy" if behind else "no rollback found")
+        return 1 if behind else 0
     elif a.boxes_cmd == "migrate":
         n = store.migrate()
         if not n["boxes"]:
@@ -433,7 +449,8 @@ def cmd_serve(a: argparse.Namespace) -> int:
             if not a.key:
                 print("--boxes needs --key", file=sys.stderr)
                 return 2
-            boxes = BoxStore(a.boxes, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys))
+            boxes = BoxStore(a.boxes, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys),
+                             rollback_guard=getattr(a, "rollback_guard", None))
             sources.update(box_sources(policy, boxes))
         vault = Vault(policy, sources, sinks, audit=_audit(a.audit, a.key), mode="shadow" if a.shadow else "enforce",
                       cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None,

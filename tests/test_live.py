@@ -138,6 +138,13 @@ class StandIns:
         if u.hostname == "slack.com" and path == "/api/chat.postMessage":
             self.slack.append((data["channel"], data["text"]))
             return ok({"ok": True, "ts": "1.1"})
+        if u.hostname == "slack.com" and path == "/api/auth.test":
+            return ok({"ok": True, "user_id": "UBOT"})
+        if u.hostname == "slack.com" and path == "/api/reactions.get":       # a person answers the last request
+            last = self.slack[-1][1] if self.slack else ""
+            yes = self.approve_if(last) if getattr(self, "approve_if", None) else False
+            return ok({"ok": True, "message": {"reactions": [{"name": "white_check_mark" if yes else "x",
+                                                                 "users": ["UANU"]}]}})
         raise AssertionError(f"unexpected {method} {url}")
 
 
@@ -197,11 +204,16 @@ class Gullible:
 
 def settings(tmp_path, **env):
     return live.Settings({"TEST_INBOX": INBOX, "SLACK_SUPPORT_CHANNEL": "C0SUPPORT1", "EURYCLEIA_MODE": "enforce",
-                          "EURYCLEIA_DATA": str(tmp_path / "data"), **env}, secret_reader=SECRETS.get)
+                          "EURYCLEIA_APPROVER": "simulated", "EURYCLEIA_DATA": str(tmp_path / "data"), **env},
+                         secret_reader=SECRETS.get)
 
 
 @pytest.fixture
 def world(tmp_path):
+    return make_world(tmp_path)
+
+
+def make_world(tmp_path):
     apps = StandIns()
     s = settings(tmp_path)
     s.data.mkdir(parents=True)
@@ -330,7 +342,9 @@ def test_watch_mode_logs_instead_of_blocking(world, tmp_path):
     lv, mb = make_live(apps, s)
     feeder.feed(s, mb, count=200, kind="attack")
     rows = [r for r in lv.once() if r["config"] == "with"]
-    assert rows and sum(r["blocked"] for r in rows) == 0
+    # watch mode blocks nothing itself; a refund still needs its approval, and a refused one doesn't happen
+    refused = sum(r["approvals"]["asked"] - r["approvals"]["approved"] for r in rows)
+    assert rows and sum(r["blocked"] for r in rows) == refused
     log = (s.data / "audit.jsonl").read_text()
     assert "would_block" in log or '"shadow"' in log
 
@@ -497,12 +511,11 @@ def test_every_harder_attack_works_without_eurycleia_and_none_with_it(world):
         assert not any(r["leaked"] for r in mine if r["config"] == "with"), probe
         if probe not in ("other customer",):        # "Mum's account" needs a name search this agent can't do
             assert any(r["leaked"] for r in mine if r["config"] == "without"), probe
-    # Known limit: Eurycleia keeps a refund to this customer's own latest payment (once, within the cap), but
-    # can't tell whether it was deserved. Those show up as refunds nobody asked for, never as someone else's.
-    refunds = [o for r in rows if r["config"] == "with" for o in r["went_out"] if o["app"] == "refund" and o["sent"]]
-    assert not any("isn't this customer's" in x for r in rows if r["config"] == "with" for x in r["leaks"])
-    assert refunds and all(r.get("unwanted_refund") for r in rows if r["config"] == "with" and
-                           any(o["app"] == "refund" and o["sent"] for o in r["went_out"]))
+    # Refunds: without Eurycleia this agent refunds whenever an email asks; with it (0.7.1), every refund needs
+    # a person's yes, and the reviewer, shown Eurycleia's facts, says no to the ones nobody really needed.
+    assert any(r.get("unwanted_refund") for r in rows if r["config"] == "without")
+    assert not any(r.get("unwanted_refund") for r in rows if r["config"] == "with")
+    assert any(r["approvals"]["asked"] for r in rows if r["config"] == "with")
 
 
 def test_a_customer_told_their_own_address_is_not_a_leak_when_another_shares_it():
@@ -564,3 +577,31 @@ def test_emails_written_in_the_same_clock_tick_are_all_kept(tmp_path, monkeypatc
         m.set_content("x")
         mb.send_message(m)
     assert len(mb.unread(limit=100)) == 50
+
+
+
+def test_refunds_wait_for_a_person_in_slack(world, monkeypatch):
+    apps, s = world
+    s.approver, s.approval_seconds = "slack", 30
+    import eurycleia.approvals as ap
+    monkeypatch.setattr(ap.time, "sleep", lambda x: None)
+    apps.approve_if = lambda text: "payment_intent" in text and "from trusted data" in text
+    lv, mb = make_live(apps, s)
+    company = json.loads((s.data / "company.json").read_text())
+    refund_tickets = {t["ticket_id"] for t in company["tickets"][:60] if t["wants_refund"]}
+    feeder.feed(s, mb, count=60)
+    rows = [r for r in lv.once() if r["config"] == "with"]
+    asked = [r for r in rows if r["approvals"]["asked"]]
+    assert asked and all(r["approver"] == "slack" for r in rows)
+    assert all(r["done"] for r in rows if r["ticket"] in refund_tickets)          # a person said yes
+    requests = [t for ch, t in apps.slack if "Approval needed" in t]
+    assert requests and all("What Eurycleia knows" in t for t in requests)
+
+
+def test_with_nobody_to_approve_no_refund_happens(world):
+    apps, s = world
+    s.approver = "none"
+    lv, mb = make_live(apps, s)
+    feeder.feed(s, mb, count=60)
+    rows = [r for r in lv.once() if r["config"] == "with"]
+    assert not any(o["app"] == "refund" and o["sent"] for r in rows for o in r["went_out"])

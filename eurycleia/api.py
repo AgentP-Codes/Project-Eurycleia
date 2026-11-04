@@ -313,16 +313,39 @@ class ApiServer:
 class _Server(ThreadingHTTPServer):
     request_queue_size = 256         # many agents connecting at once (the default of 5 drops connections)
     daemon_threads = True
-    max_connections = 256            # beyond this, new connections are closed straight away
+    max_connections = 256            # open connections at once
+    read_deadline = 10.0             # seconds a client gets to send its whole request, however slowly it trickles
 
     def __init__(self, *a: Any, **kw: Any):
         super().__init__(*a, **kw)
         self._slots = threading.BoundedSemaphore(self.max_connections)
+        self._reading: dict[Any, float] = {}           # connections still sending their request -> when they opened
+        self._reading_lock = threading.Lock()
+
+    def started_reading(self, request: Any) -> None:
+        with self._reading_lock:
+            self._reading[request] = time.monotonic()
+
+    def done_reading(self, request: Any) -> None:
+        with self._reading_lock:
+            self._reading.pop(request, None)
+
+    def _drop_slowest(self) -> bool:
+        """Full up: close the connection that has spent longest not finishing its request. Idle or trickling
+        connections can't lock agents out this way; connections already being answered are never touched."""
+        with self._reading_lock:
+            if not self._reading:
+                return False
+            oldest = min(self._reading, key=self._reading.__getitem__)
+            self._reading.pop(oldest)
+        _hang_up(oldest)
+        return True
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
-            self.shutdown_request(request)             # too many open connections (e.g. a slow-connection attack)
-            return
+            if not (self._drop_slowest() and self._slots.acquire(timeout=2)):
+                self.shutdown_request(request)         # every connection is busy being answered
+                return
         try:
             super().process_request(request, client_address)
         except Exception:
@@ -330,10 +353,30 @@ class _Server(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
+        self.started_reading(request)
+        timer = threading.Timer(self.read_deadline, self._too_slow, (request,))
+        timer.daemon = True
+        timer.start()
         try:
             super().process_request_thread(request, client_address)
         finally:
+            timer.cancel()
+            self.done_reading(request)
             self._slots.release()
+
+    def _too_slow(self, request: Any) -> None:
+        with self._reading_lock:
+            still = self._reading.pop(request, None) is not None
+        if still:
+            _hang_up(request)                          # a slow-drip client: no request after read_deadline
+
+
+def _hang_up(request: Any) -> None:
+    import socket
+    try:
+        request.shutdown(socket.SHUT_RDWR)             # wakes the handler thread blocked reading it
+    except OSError:
+        pass
 
 
 # ------------------------------------------------------------------ request signing
@@ -366,7 +409,8 @@ class _Handler(BaseHTTPRequestHandler):
     api: ApiServer
     server_version = "eurycleia-api"
     sys_version = ""
-    timeout = 30                         # a client that stops sending is dropped (no thread held forever)
+    timeout = 5                          # a client that goes quiet mid-request is dropped (no thread held forever);
+                                         # _Server.read_deadline caps the whole request for slow-drip clients
     protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:     # no request details in logs
@@ -413,6 +457,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(413, {"error": "request too large"})
             return None
         body = self.rfile.read(n) if n else b""
+        self.server.done_reading(self.request)                    # the whole request is in: never dropped now
         ts, nonce = self.headers.get("x-eurycleia-time") or "", self.headers.get("x-eurycleia-nonce") or ""
         mac = self.headers.get("x-eurycleia-auth") or ""
         good = request_mac(self.api.token, self.command, self.path, ts, nonce, body)

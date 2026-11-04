@@ -4,9 +4,9 @@ Plans, not promises. They change as test results and users come in.
 
 ## 0.7.x
 
-- Ask a person before unusual actions (a refund nobody asked for, a bigger amount, a new address), instead of
-  only blocking or allowing.
-- Live results from more models: OpenAI and Claude, small and large.
+- Done in 0.7.1: a person approves refunds, seeing Eurycleia's facts rather than the AI's account.
+- Live results from more models: OpenAI and Claude, small and large, with refunds approved.
+- Ask a person only when an action is unusual (a bigger amount, a new address), so routine work runs on its own.
 
 ## 0.8
 

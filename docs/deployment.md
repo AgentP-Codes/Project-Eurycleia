@@ -5,7 +5,7 @@ A checklist for running Eurycleia in front of real agents and real data.
 ## 1. Install and pin
 
 ```bash
-pip install "eurycleia[all]==0.7.0"
+pip install "eurycleia[all]==0.7.1"
 ```
 
 Pin the version. Read the changelog before upgrading, and rerun `eurycleia test` in CI on every upgrade.
@@ -64,7 +64,7 @@ Everything depends on this: the values you pass to `start_task` (e.g. `customer_
 
 ## 7. Oversight
 
-- Give high-risk sinks `risk: high` and pass an `approver` that asks a person (Slack, email, a queue). With no approver configured, high-risk actions fail closed.
+- Give high-risk sinks `risk: high` (or `approval: always`) and pass an `approver` that asks a person. `eurycleia.approvals.SlackApprover` posts each request in a Slack channel and waits for a person's :white_check_mark: or :x:. Each request shows Eurycleia's own facts (the task's trusted inputs, whether each recipient came from trusted data, whether the task read outside content) before what the agent sent, so a fooled agent can't talk the approver round. With no approver configured, no answer in time, or any error, the action is refused.
 - Use `risk: medium` and `on_flag` for actions worth a look but not worth blocking.
 - Set per-task limits (`max_calls`) and data budgets so a hijacked agent can only do a bounded amount. Review flagged actions with `eurycleia review`.
 
@@ -79,6 +79,7 @@ For the sharpest values (cards, bank accounts, IDs), keep them in deposit boxes 
 - **Approvals:** pass an `approver` to the holder key service to require a person (e.g. an HR manager) to allow each opening of a high-security box.
 - **Recovery:** create a company recovery key pair, keep the private half offline (e.g. in a safe), and pass its public key as `recovery_public_key`. It's the break-glass if a holder loses their key.
 - **Erasure:** `eurycleia boxes forget --holder customer:12` for a deletion request. A tombstone (a keyed fingerprint, no name) then stops their boxes being made again, so a later import or sync can't quietly bring their data back; `boxes put` skips their rows. If they genuinely return, `eurycleia boxes unforget --holder customer:12`. A record the vault read just before may still be in its encrypted cache for up to `cache_ttl_seconds`; restart the vault, or call `vault.cache.invalidate_source(...)` for the box source, to drop it at once. The tombstone covers the usual spellings of an id (`customer:012`, `customer:12.0`).
+- **Restored old copies:** the box logs are tamper-evident, but a whole older copy of the database looks consistent on its own (it would bring back a forgotten customer and hide later reveals). Set `--rollback-guard` (or `EURYCLEIA_ROLLBACK_GUARD`) to a file on *different* storage from the database: it records how far each box's log has got, and any box whose log is behind it is refused. `eurycleia boxes check-rollback` lists them. If you restore a backup on purpose, restore the guard file from the same moment.
 
 ## 10. Logging
 

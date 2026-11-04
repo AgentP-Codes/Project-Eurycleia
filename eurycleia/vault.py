@@ -41,7 +41,7 @@ import threading
 import unicodedata
 import urllib.parse
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog
@@ -89,6 +89,10 @@ class ApprovalRequest:
     sink: str
     reason: str
     args: dict[str, Any]   # as the agent sent them: placeholders, not real secrets
+    # What Eurycleia itself knows, as opposed to what the agent says (a fooled agent can make anything sound
+    # reasonable): the task's trusted inputs (from your app, not the model), each recipient and whether it came
+    # from trusted data, whether the task read untrusted content, and how many times this action already ran.
+    facts: dict[str, Any] = field(default_factory=dict)
 
 
 Approver = Callable[[ApprovalRequest], bool]
@@ -191,7 +195,8 @@ class Vault:
         for src in self.policy.sources.values():
             if src.owner == key_name and src.owner_domain and src.trust == "trusted":
                 rec = self._fetch(src.name, _coerce(key))
-                if rec and (domain := company_domain(rec.get(src.owner_domain), self.policy.shared_email_domains)):
+                if rec and (domain := company_domain(rec.get(src.owner_domain), self.policy.shared_email_domains,
+                                                  self.policy.company_domains)):
                     return domain
         return None
 
@@ -211,6 +216,7 @@ class Task:
         self._contacts: dict[str, set[str]] = {}
         self._untrusted_addresses: set[str] = set()
         self._unscanned = False                 # some untrusted text was too long to scan in full
+        self._read_untrusted = False            # read anything from an untrusted source (a ticket, a web page)
         self._mentioned_domains: set[str] = set()   # domains written after an "@" in untrusted text
         # One read or action at a time per task, so call limits and data budgets hold when an agent framework
         # runs tool calls in parallel. The sink itself runs outside the lock (see act).
@@ -249,6 +255,8 @@ class Task:
         if record is None:
             raise KeyError(f"{source}:{key} not found")
         src = self.vault.policy.sources[source]
+        if src.trust == "untrusted":
+            self._read_untrusted = True
         allowed = list(rule.get("fields") or [f for f in record if f not in derive])
 
         # Fields on request: the model names what it needs; nothing else is returned.
@@ -408,8 +416,10 @@ class Task:
         finally:
             self._fire_flags()
         if rule.approval == "always":
+            with self._lock:
+                facts = self._facts(sink, rule, recipients, n)
             try:
-                self._approve(sink, "policy requires a human to approve this action", shown)
+                self._approve(sink, "policy requires a human to approve this action", shown, facts)
             except Blocked:
                 with self._lock:                            # a refused call doesn't use up the limit
                     self._calls[sink] = max(0, self._calls.get(sink, 1) - 1)
@@ -551,7 +561,7 @@ class Task:
         for which, strings in (("shown", _strings(shown)), ("real", _strings(args))):
             outside: list[str] = []                    # every outside link in this action, checked together too
             for text in strings:
-                for url in _urls(text):
+                for url in _urls(text) + _reversed_urls(text):
                     if _host_allowed(url, allowed):
                         continue
                     found = [g for f in _url_forms(url, keep_case=True) for g in _link_variants(f)]
@@ -693,7 +703,8 @@ class Task:
                 # the vault from trusted data
                 src = self.vault.policy.sources[d[0]]
                 rec = self.vault._fetch(d[0], _coerce(d[1])) if src.trust == "trusted" else None
-                if rec and (domain := company_domain(rec.get(d[2]), self.vault.policy.shared_email_domains)):
+                if rec and (domain := company_domain(rec.get(d[2]), self.vault.policy.shared_email_domains,
+                                                   self.vault.policy.company_domains)):
                     out.append("*@" + domain)
                 continue
             m = re.fullmatch(r"([\w.]+):([^.]+)\.(\w+)", spec)
@@ -727,8 +738,21 @@ class Task:
         domain = self.vault._owner_domain(label.owner)
         return domain is not None and r.isascii() and "@" in r and r.rsplit("@", 1)[1] == domain
 
-    def _approve(self, sink: str, reason: str, args: dict[str, Any]) -> None:
-        req = ApprovalRequest(self.id, self.template.name, sink, reason, dict(args))
+    def _facts(self, sink: str, rule: SinkRule, recipients: list[Any], n: int) -> dict[str, Any]:
+        """What an approver should judge by: Eurycleia's own record of the task, not the agent's account."""
+        trusted = self._trusted_recipients(rule.allowed_recipients) if rule.recipient_arg else []
+        return {
+            "task": self.template.name,
+            "trusted_inputs": {k: v for k, v in self.trusted.items()},
+            "recipients": [{"value": r, "from_trusted_data": _matches(r, trusted), "relation": self._relation(r)}
+                           for r in recipients],
+            "read_untrusted_content": bool(self._untrusted_addresses or self._unscanned or self._read_untrusted),
+            "call_number": n,
+            "max_calls": rule.max_calls,
+        }
+
+    def _approve(self, sink: str, reason: str, args: dict[str, Any], facts: dict[str, Any] | None = None) -> None:
+        req = ApprovalRequest(self.id, self.template.name, sink, reason, dict(args), dict(facts or {}))
         ok = bool(self.vault.approver and self.vault.approver(req))
         self.vault.audit.record("approval", task=self.id, sink=sink, reason=reason,
                                 decision="approved" if ok else "denied")
@@ -1068,6 +1092,19 @@ def _urls(text: str) -> list[str]:
     return [u for u in dict.fromkeys(x.strip() for x in out) if u]
 
 
+_EXPLICIT_LINK = re.compile(r"(?:https?|ftps?|wss?|file|javascript|vbscript|mailto):|[a-z][a-z0-9+.\-]{0,31}://|//|www\.",
+                            re.I)
+
+
+def _reversed_urls(text: str) -> list[str]:
+    """Links written backwards ("moc.elpmaxe//:sptth"), which any page script or the recipient can turn round.
+    Only ones that read as a link with an explicit start (a scheme, "//" or "www.") once reversed, so ordinary
+    text that happens to look like a domain backwards isn't treated as a link."""
+    if not re.search(r"[:/\\]|\.www", text, re.I):
+        return []
+    return [u for u in _urls(text[::-1]) if _EXPLICIT_LINK.match(u) and _url_host(u) != ""]   # a real website
+
+
 def _url_host(url: str) -> str | None:
     """The website a link loads from, read the way browsers do (any number of slashes or backslashes after a
     web scheme, the part after the last '@' before the path, no port); "" if it can't be told; None for
@@ -1203,6 +1240,9 @@ hanmail nate seznam wp onet interia o2 abv rambler inbox bk list ukr shaw rogers
 mailinator yopmail guerrillamail sharklasers grr guerrillamailblock pokemail spam4 tempmail temp-mail 10minutemail
 trashmail throwawaymail maildrop dispostable mintemail getnada mohmal emailondeck usa post hushmail lycos rediff
 excite netscape inbox mail2world safe-mail
+startmail skiff ctemplar onmail mailo kolabnow countermail simplelogin anonaddy mozmail privaterelay
+lavabit workmail iname writeme emailn burnermail 33mail spamgourmet mytrashmail fakeinbox mailnesia moakt
+tempinbox tempr mailcatch dropmail inboxkitten emailfake harakirimail mailtm tmpmail tempmailo emailnator
 """.split())
 PUBLIC_SUFFIXES = frozenset("""
 co.uk org.uk ac.uk gov.uk me.uk com.au net.au org.au edu.au gov.au id.au co.nz net.nz org.nz com.br co.jp ne.jp
@@ -1210,10 +1250,11 @@ co.in co.za com.cn com.mx com.sg com.hk co.kr
 """.split())
 
 
-def company_domain(value: Any, shared: Any = ()) -> str | None:
+def company_domain(value: Any, shared: Any = (), allowed: Any = ()) -> str | None:
     """A business customer's email domain from trusted data, lower-cased; None if it isn't a plain domain, is only
     a public suffix (co.uk), or looks like a shared email service (gmail.com, yahoo.com.au, anything in `shared`),
-    where 'anyone at the domain' means anyone."""
+    where 'anyone at the domain' means anyone. With `allowed` (the policy's company_domains), only those exact
+    domains count: no list of email services is ever complete, so this is the strict setting."""
     if not isinstance(value, str):
         return None
     d = value.strip().lower().lstrip("@").rstrip(".")
@@ -1223,6 +1264,8 @@ def company_domain(value: Any, shared: Any = ()) -> str | None:
     if any(d == x or d.endswith("." + x) for x in extra):
         return None
     if any(label in SHARED_EMAIL_PROVIDERS for label in d.split(".")[:-1]):     # every label but the ending
+        return None
+    if allowed and d not in {str(x).strip().lower().lstrip("@").rstrip(".") for x in allowed}:
         return None
     return d
 
@@ -1261,15 +1304,29 @@ def _mask_patterns(mask: dict[str, str]) -> list[tuple[re.Pattern[str], str]]:
 def _mask(value: Any, mask: dict[str, str], secrets_out: Any = ()) -> Any:
     """Replace real values with what the agent saw, anywhere in a sink's result: in text, in keys, as
     numbers, in any case, and reformatted (a card "4111 1111 1111 1111" also as 4111-1111-1111-1111).
-    Secrets (`secrets_out`) are also caught written in base64 or hex."""
+    Secrets (`secrets_out`) are also caught written in base64 or hex, backwards, and for long numbers in parts
+    of 8 or more digits (see _pieces)."""
     if not mask:
         return value
     mask = dict(mask)
     for real in secrets_out:
         if real in mask:
-            for enc in _encodings(real):
+            for enc in _encodings(real) | _pieces(real):
                 mask.setdefault(enc, mask[real])
     return _mask_value(value, _mask_patterns(mask))
+
+
+def _pieces(real: str) -> set[str]:
+    """A secret written backwards, and, for a long number (a card, an account number), any run of 8 or more of
+    its digits in order or backwards: what's left when a result shows part of it, or splits it across fields.
+    Shorter pieces, such as a card's last four digits, which receipts normally show, are left alone."""
+    out = {real[::-1], re.sub(r"[\W_]", "", real)[::-1]}
+    digits = re.sub(r"\D", "", real)
+    if len(digits) >= 12 and len(digits) >= 0.6 * len(re.sub(r"[\W_]", "", real)):
+        for form in (digits, digits[::-1]):
+            for size in range(8, len(form)):
+                out |= {form[i:i + size] for i in range(len(form) - size + 1)}
+    return {p for p in out if len(p) >= 6}
 
 
 def _encodings(real: str) -> set[str]:

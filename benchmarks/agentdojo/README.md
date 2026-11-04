@@ -88,4 +88,5 @@ python run_live.py --summarize agentdojo-results.jsonl
 - Each finished episode is saved to `agentdojo-results.jsonl`. Running the same command again carries on where it stopped (quota, Ctrl+C).
 - A full run is thousands of model calls, so on a free tier start with one suite and `--max-pairs`.
 - `--provider ollama --model hermes3` runs a local model through Ollama.
+- `--provider azure --model <your deployment>` runs a model deployed in Azure OpenAI, such as the gpt-5-mini used in the [live test](../../docs/live-test-results.md). Set `AZURE_OPENAI_ENDPOINT` and sign in with `az login`: no key is stored. (`AZURE_OPENAI_API_KEY` works too, from the environment only.)
 - The attack is AgentDojo's standard `important_instructions`.

@@ -14,6 +14,8 @@
 #   ./setup.sh key openai           store an API key for another model provider (openai, anthropic, openrouter)
 #   ./setup.sh model openai MODEL   switch the agent's model (model azure gpt-5-mini switches back)
 #   ./setup.sh budget 5             the agent's daily model budget in A$
+#   ./setup.sh approver slack       who approves refunds: slack (a person), simulated (unattended rounds) or none
+#   ./setup.sh demo                 a public live page of the test as it runs (./setup.sh demo off removes it)
 #   ./setup.sh status     what's set up, and the last few runs
 #   ./setup.sh remove     delete EVERYTHING in the resource group, including the AI model
 #
@@ -198,6 +200,36 @@ jobs() {
   make_job eurycleia-feed Manual "" '["python", "deploy/live/feeder.py"]' '[]'
 }
 
+demo() {   # the live demo page: a public static website on the storage account, fed by the agent as it works
+  local page="$HERE/demo/index.html" key principal sid web
+  [ -f "$page" ] || { echo "demo/index.html is missing: unzip the whole azure-setup.zip next to setup.sh"; exit 1; }
+  say "Live demo page (made-up data only; addresses, payment ids and channels hidden)"
+  key="$(az storage account keys list -n "$STORAGE" -g "$RESOURCE_GROUP" --query '[0].value' -o tsv)"
+  az storage blob service-properties update --account-name "$STORAGE" --account-key "$key" \
+    --static-website --index-document index.html -o none
+  az storage blob upload --account-name "$STORAGE" --account-key "$key" -c '$web' -n index.html -f "$page" \
+    --content-type "text/html; charset=utf-8" --content-cache-control "no-cache" --overwrite -o none
+  # the agent may write to the page's container only, with its own identity (no storage key in the job)
+  principal="$(az identity show -n "$IDENTITY" -g "$RESOURCE_GROUP" --query principalId -o tsv)"
+  sid="$(az storage account show -n "$STORAGE" -g "$RESOURCE_GROUP" --query id -o tsv)"
+  az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" --scope "$sid/blobServices/default/containers/\$web" -o none \
+    2>/dev/null || true
+  set_env EURYCLEIA_DEMO_URL "https://$STORAGE.blob.core.windows.net/\$web"
+  web="$(az storage account show -n "$STORAGE" -g "$RESOURCE_GROUP" --query primaryEndpoints.web -o tsv)"
+  echo "Live demo: $web"
+  echo "(It fills in once the agent next handles an email. New permissions can take a few minutes to apply.)"
+}
+
+demo_off() {
+  local key
+  key="$(az storage account keys list -n "$STORAGE" -g "$RESOURCE_GROUP" --query '[0].value' -o tsv)"
+  az containerapp job update -n eurycleia-agent -g "$RESOURCE_GROUP" --remove-env-vars EURYCLEIA_DEMO_URL -o none
+  az storage blob service-properties update --account-name "$STORAGE" --account-key "$key" \
+    --static-website false -o none
+  echo "Live demo page switched off."
+}
+
 set_env() {   # NAME value: on the scheduled agent job
   az containerapp job update -n eurycleia-agent -g "$RESOURCE_GROUP" --set-env-vars "$1=$2" -o none
 }
@@ -250,8 +282,16 @@ case "${1:-}" in
            fi
            az containerapp job update -n eurycleia-agent -g "$RESOURCE_GROUP" --set-env-vars "${vars[@]}" -o none
            echo "The agent now uses $prov / $mdl from its next run." ;;
+  approver) case "${2:-}" in slack|simulated|none) ;;
+             *) echo "usage: ./setup.sh approver slack|simulated|none [SECONDS] [SLACK_USER_IDS]"; exit 1 ;; esac
+           vars=("EURYCLEIA_APPROVER=$2")
+           [ -n "${3:-}" ] && vars+=("EURYCLEIA_APPROVAL_SECONDS=$3")
+           [ -n "${4:-}" ] && vars+=("EURYCLEIA_APPROVERS=$4")
+           az containerapp job update -n eurycleia-agent -g "$RESOURCE_GROUP" --set-env-vars "${vars[@]}" -o none
+           echo "Refunds are now approved by: $2." ;;
   budget)  [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "usage: ./setup.sh budget AUD_PER_DAY"; exit 1; }
            set_env EURYCLEIA_BUDGET_AUD "$2"; echo "Daily model budget: A\$$2." ;;
+  demo)    if [ "${2:-}" = "off" ]; then demo_off; else demo; fi ;;
   status)  status ;;
   remove)
     read -r -p "Delete resource group $RESOURCE_GROUP and EVERYTHING in it, including the AI model? Type its name: " ok

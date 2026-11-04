@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.1
+
+**Approvals that can't be talked around**
+- An approval request now carries Eurycleia's own facts (`ApprovalRequest.facts`): the task's trusted inputs, each recipient and whether it came from trusted data, whether the task read outside content, and how many times the action has run. Approvers should judge by these, not by what the agent sent, since a fooled agent can make anything sound reasonable (OWASP ASI09)
+- `eurycleia.approvals`: `SlackApprover` posts each request in a Slack channel, facts first, and waits for a person's reaction (:white_check_mark: approves, :x: refuses). Only people count, never the bot; with `approvers`, only those Slack users. A refusal wins, and no answer in time, Slack being unreachable or any error means no. Text the agent wrote is shown as text, so it can't mention everyone or hide a link. `describe(req)` gives the same plain-text view for any other approver
+
+**Live test**
+- Every refund now needs a person's approval (`approval: always`), closing the gap 0.7.0's live test found: with Eurycleia the model still gave refunds nobody asked for. Approvers: a person in Slack (default), a clearly labelled simulated reviewer for unattended rounds, or none. Results record who approved. `./setup.sh approver slack|simulated|none`
+- A live demo page (`./setup.sh demo`): a public web page that follows the test as it runs, each email with what the AI did without and with Eurycleia, what was blocked and why, refunds waiting for approval, and running totals. The agent publishes it with its own Azure identity, allowed to write that one storage container only. Only made-up data is ever shown, and even then email addresses, payment ids, phone and card numbers, chat channels and canary codes are hidden; what the AI read is never shown, only what it did
+- Emails written to the no-email folder in the same clock tick no longer replace each other (found by CI)
+- The public repository builds and checks the live test image without trying to publish it
+- The AgentDojo runner works with Azure OpenAI (`--provider azure`), signing in with `az login` or the machine's own identity, so the live test's model can be run on the public benchmark without storing a key
+
+**Security fixes** (nine issues reported privately by [rust-smith](https://github.com/rust-smith); thank you)
+- A link written backwards end to end (`moc.elpmaxe//:sptth`, with customer data in it) is now read backwards and checked like any other outside link. 0.7.0 only caught the data part reversed inside a normal link
+- App results are now masked for a secret written backwards, and for a long number (card, account) cut into pieces of 8 or more digits, as well as the encodings 0.7.0 caught
+- Free and throwaway mail services: about 40 more are refused as a business customer's own domain (privacy relays such as SimpleLogin and Firefox Relay among them). New strict setting: list your customers' domains under `company_domains` and only those are ever accepted, whatever a record says
+- The TypeScript adapter refuses a reply that isn't signed before reading it, and caps how much it reads (`maxReplyBytes`, 16 MB), so another program on the port can't make it read without end
+- `connections.json` (which records what `connect` changed) is written privately (owner only) and all at once; an older readable copy is locked the next time it's used
+- Deposit boxes: restoring an older copy of the box database (which would bring back a forgotten customer and hide later reveals from the logs) is caught when a rollback guard is set: `--rollback-guard <file on other storage>` or `EURYCLEIA_ROLLBACK_GUARD`. Every box behind the guard is refused; `eurycleia boxes check-rollback` lists them
+- The local API: a client gets 10 seconds to send its whole request, and when every connection is taken, the one that has spent longest without finishing its request is closed. Idle or slowly-dripping connections can no longer lock agents out
+- A holder's approval to open a high-security box now covers only that item, in that task, for `open_ttl`. Before, it covered every reveal of the holder's boxes for that window, including other tasks
+- Hermes' YAML settings keep their comments and layout through `connect`, `watch`/`enforce` and `disconnect`; only the changed servers' lines are rewritten
+
 ## 0.7.0
 
 **Tested live, not simulated**

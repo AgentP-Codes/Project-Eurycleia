@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eurycleia live test</title>
+<meta name="description" content="A real AI model answers a made-up company's support email, with and without Eurycleia, live.">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #16181d; --muted: #5d6573; --line: #e3e6eb;
+    --ok: #137a3c; --ok-bg: #e5f4ea; --bad: #b42318; --bad-bg: #fde8e6; --warn: #8a5a00; --warn-bg: #fdf1d8;
+    --wait: #3b5bdb; --wait-bg: #e7ecff; --chip: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --ink: #e8eaee; --muted: #9aa3b2; --line: #2a2f3a;
+      --ok: #5fd08a; --ok-bg: #12301f; --bad: #ff8a80; --bad-bg: #3a1714; --warn: #f5c26b; --warn-bg: #3a2a0d;
+      --wait: #91a7ff; --wait-bg: #1c2445; --chip: #232833;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 4px 0 0; max-width: 62ch; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
+          font-weight: 600; font-size: 13px; background: var(--chip); color: var(--muted); }
+  .pill.live { background: var(--ok-bg); color: var(--ok); }
+  .pill.down { background: var(--bad-bg); color: var(--bad); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .pill.live .dot { animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .meta { color: var(--muted); font-size: 13px; margin: 10px 0 18px; }
+  .totals { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 22px; }
+  .tcard { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .tcard h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase;
+              letter-spacing: .04em; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12.5px; }
+  .stat.bad b { color: var(--bad); } .stat.good b { color: var(--ok); }
+  .email { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px;
+           overflow: hidden; }
+  .email.new { animation: arrive .6s ease-out; }
+  @keyframes arrive { from { transform: translateY(-6px); opacity: 0; } }
+  .ehead { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .subject { font-weight: 650; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--chip); color: var(--muted); }
+  .badge.attack { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+  .badge.normal { background: var(--ok-bg); color: var(--ok); }
+  .snippet { color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+  .subject, .steps li, .result small, .badge { overflow-wrap: anywhere; }
+  .lanes { display: grid; grid-template-columns: 1fr 1fr; }
+  .lane { padding: 10px 16px 12px; }
+  .lane + .lane { border-left: 1px solid var(--line); }
+  .lane h3 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+             margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; }
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .steps li { display: grid; grid-template-columns: 20px 1fr; gap: 6px; padding: 3px 0; font-size: 13.5px; }
+  .steps .ic { text-align: center; }
+  .why { display: block; color: var(--muted); font-size: 12.5px; }
+  .s-blocked { color: var(--bad); } .s-safety_net { color: var(--warn); } .s-error { color: var(--warn); }
+  .s-approval { color: var(--wait); } .s-approved { color: var(--ok); } .s-refused { color: var(--bad); }
+  .result { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 13.5px; font-weight: 600; }
+  .result.leak { background: var(--bad-bg); color: var(--bad); }
+  .result.safe { background: var(--ok-bg); color: var(--ok); }
+  .result small { display: block; font-weight: 400; }
+  .status { font-weight: 500; text-transform: none; letter-spacing: 0; }
+  .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent;
+          border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty { text-align: center; color: var(--muted); padding: 40px 16px; background: var(--card);
+           border: 1px dashed var(--line); border-radius: 12px; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 24px; }
+  @media (max-width: 720px) {
+    .totals, .lanes { grid-template-columns: 1fr; }
+    .lane + .lane { border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Eurycleia live test</h1>
+      <p class="sub">A real AI model answers a made-up company's support email. Each email is handled twice: once
+        on its own, once with Eurycleia in front of the company's data and apps.</p>
+    </div>
+    <span id="status" class="pill"><span class="dot"></span><span id="status-text">Connecting…</span></span>
+  </header>
+  <div class="meta" id="meta"></div>
+  <section class="totals" id="totals"></section>
+  <section id="emails"><div class="empty">Waiting for the first email…</div></section>
+  <footer>Made-up company and customers only. Email addresses, payment ids and chat channels are hidden, and what
+    the AI read is never shown, only what it did. Refreshes every few seconds.</footer>
+</div>
+<script>
+"use strict";
+const ICON = { ok: "✓", blocked: "⛔", safety_net: "⚠", error: "⚠", approval: "⏳", approved: "✅", refused: "✋" };
+const TITLE = { without: "Without Eurycleia", with: "With Eurycleia" };
+let seen = new Set();
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
+}
+
+function setStatus(kind, text) {
+  document.getElementById("status").className = "pill " + kind;
+  document.getElementById("status-text").textContent = text;
+}
+
+function stat(label, value, cls) {
+  const s = el("div", "stat " + (cls || ""));
+  s.append(el("b", null, value), el("span", null, label));
+  return s;
+}
+
+function renderTotals(t) {
+  const box = document.getElementById("totals");
+  box.replaceChildren();
+  for (const cfg of ["without", "with"]) {
+    const x = t[cfg] || {};
+    const card = el("div", "tcard");
+    card.append(el("h2", null, TITLE[cfg]));
+    const st = el("div", "stats");
+    st.append(
+      stat("attacks that leaked data", (x.attacks_leaked || 0) + " / " + (x.attacks || 0),
+           (x.attacks_leaked || 0) > 0 ? "bad" : (x.attacks ? "good" : "")),
+      stat("emails that leaked anything", (x.leaked || 0) + " / " + (x.emails || 0), (x.leaked || 0) > 0 ? "bad" : ""),
+      stat("normal requests done", (x.normal_done || 0) + " / " + (x.normal || 0)),
+      stat("refunds nobody asked for", x.unwanted_refunds || 0, (x.unwanted_refunds || 0) > 0 ? "bad" : ""));
+    if (cfg === "with") {
+      st.append(stat("actions blocked", x.blocked || 0),
+                stat("refund approvals given / asked", (x.approvals_given || 0) + " / " + (x.approvals_asked || 0)));
+    }
+    card.append(st);
+    box.append(card);
+  }
+}
+
+function renderLane(cfg, run) {
+  const lane = el("div", "lane");
+  const h = el("h3", null, TITLE[cfg]);
+  const st = el("span", "status");
+  if (run.status === "running") { st.append(el("span", "spin"), document.createTextNode(" working")); }
+  else if (run.status === "waiting") { st.textContent = "queued"; }
+  h.append(st);
+  lane.append(h);
+  const ul = el("ul", "steps");
+  for (const s of run.steps || []) {
+    const li = el("li", "s-" + s.outcome);
+    li.append(el("span", "ic", ICON[s.outcome] || "•"));
+    const body = el("span", null, s.what);
+    if (s.why && s.outcome !== "ok") body.append(el("span", "why", s.why));
+    li.append(body);
+    ul.append(li);
+  }
+  lane.append(ul);
+  const r = run.result;
+  if (r) {
+    const leak = r.leaked;
+    const box = el("div", "result " + (leak ? "leak" : "safe"),
+                   leak ? "Data leaked" : (r.unwanted_refund ? "No data leaked" : "Nothing leaked"));
+    const notes = [];
+    if (leak && r.leaks && r.leaks.length) notes.push(r.leaks.join("; "));
+    if (r.unwanted_refund) notes.push("but a refund nobody asked for went through");
+    if (!leak && r.blocked) notes.push(r.blocked + " action" + (r.blocked === 1 ? "" : "s") + " blocked");
+    if (notes.length) box.append(el("small", null, notes.join(" · ")));
+    if (r.unwanted_refund && !leak) box.className = "result leak";
+    lane.append(box);
+  }
+  return lane;
+}
+
+function renderEmails(list) {
+  const box = document.getElementById("emails");
+  if (!list.length) return;
+  box.replaceChildren();
+  for (const e of list) {
+    const card = el("article", "email" + (seen.has(e.id) ? "" : " new"));
+    const head = el("div", "ehead");
+    head.append(el("div", "subject", e.subject || "(no subject)"));
+    const badges = el("div", "badges");
+    if (e.kind === "attack") badges.append(el("span", "badge attack", "Attack" + (e.probes ? ": " + e.probes : "")));
+    else if (e.kind === "normal") badges.append(el("span", "badge normal", "Normal request"));
+    else badges.append(el("span", "badge", "From outside"));
+    if (e.customer) badges.append(el("span", "badge", "Customer " + e.customer));
+    if (e.ticket) badges.append(el("span", "badge", e.ticket));
+    if (e.at) badges.append(el("span", "badge", ago(e.at)));
+    head.append(badges, el("div", "snippet", e.snippet || ""));
+    card.append(head);
+    const lanes = el("div", "lanes");
+    for (const cfg of ["without", "with"]) {
+      if (e.runs && e.runs[cfg]) lanes.append(renderLane(cfg, e.runs[cfg]));
+    }
+    card.append(lanes);
+    box.append(card);
+  }
+  seen = new Set(list.map(e => e.id));
+}
+
+async function poll() {
+  try {
+    const r = await fetch("live/feed.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const f = await r.json();
+    const fresh = f.updated && Date.now() - Date.parse(f.updated) < 90000;
+    if (f.running && fresh) setStatus("live", "Live");
+    else setStatus("", "Idle · updated " + (f.updated ? ago(f.updated) : "never"));
+    const bits = [];
+    if (f.round) bits.push("Round " + f.round);
+    if (f.model) bits.push("Model: " + f.model);
+    if (f.mode) bits.push(f.mode === "enforce" ? "Eurycleia blocking" : "Eurycleia watching only");
+    if (f.approver) bits.push("Refunds approved by: " + (f.approver === "slack" ? "a person in Slack" : f.approver));
+    document.getElementById("meta").textContent = bits.join(" · ");
+    renderTotals(f.totals || {});
+    renderEmails(f.emails || []);
+  } catch (err) {
+    setStatus("down", "Can't reach the live feed");
+  }
+}
+poll();
+setInterval(poll, 3000);
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ API keys are read from the environment only. Set them in the window you run from
 command line or in a file:
 
     Windows:     set ANTHROPIC_API_KEY=...     (or OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY)
+                 Azure: set AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com and `az login` (no key)
     macOS/Linux: export ANTHROPIC_API_KEY=...
 
     pip install -r requirements.txt
@@ -13,6 +14,8 @@ command line or in a file:
     python run_live.py --provider openai --model gpt-6-luna --budget-aud 6           # then the full run
     python run_live.py --provider anthropic --model claude-sonnet-5 --sample 0.25 --budget-aud 22
     python run_live.py --provider openrouter --model qwen/qwen3.6-plus --budget-aud 8
+    python run_live.py --provider azure --model gpt-5-mini --smoke     # your Azure deployment's name; `az login`
+                                                                       # first (or set AZURE_OPENAI_API_KEY)
     python run_live.py --summarize agentdojo-results.jsonl
 
 The cost is counted from the tokens each provider reports and priced from demo/pricing.py (a model that
@@ -64,6 +67,9 @@ def make_llm(provider: str, model: str):
         from agentdojo.agent_pipeline import GoogleLLM
         from google import genai
         return GoogleLLM(model, client=genai.Client(api_key=key("GEMINI_API_KEY", "GOOGLE_API_KEY")))
+    if provider == "azure":
+        from agentdojo.agent_pipeline import OpenAILLM
+        return OpenAILLM(azure_client(), model)
     if provider in ("openai", "openrouter"):
         import openai
         from agentdojo.agent_pipeline import OpenAILLM
@@ -74,6 +80,21 @@ def make_llm(provider: str, model: str):
                                    max_retries=6)
         return OpenAILLM(client, model)
     raise SystemExit(f"unknown provider {provider}")
+
+
+def azure_client(endpoint: str | None = None):
+    """An OpenAI client for Azure OpenAI's v1 API. The model is your deployment's name. Signs in with
+    AZURE_OPENAI_API_KEY if it's set, otherwise with your own Azure sign-in (`az login`) or the machine's
+    managed identity, so no key needs to be stored anywhere (tokens are renewed as the run goes)."""
+    import openai
+    endpoint = (endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
+    if not endpoint.startswith("https://"):
+        raise SystemExit("set AZURE_OPENAI_ENDPOINT to your resource's address, e.g. https://my-resource.openai.azure.com")
+    base = (endpoint if endpoint.endswith("/openai/v1") else endpoint + "/openai/v1") + "/"
+    if os.environ.get("AZURE_OPENAI_API_KEY"):
+        return openai.OpenAI(api_key=os.environ["AZURE_OPENAI_API_KEY"], base_url=base, max_retries=6)
+    from eurycleia.azure import OPENAI_RESOURCE, AzureToken
+    return openai.OpenAI(api_key=AzureToken(OPENAI_RESOURCE), base_url=base, max_retries=6)
 
 
 def make_pipeline(llm, model: str, executor) -> AgentPipeline:
@@ -248,7 +269,7 @@ def summarize(path: Path) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--provider", choices=["anthropic", "openai", "gemini", "openrouter"])
+    ap.add_argument("--provider", choices=["anthropic", "openai", "gemini", "openrouter", "azure"])
     ap.add_argument("--model")
     ap.add_argument("--suite", action="append", choices=["workspace", "travel", "banking", "slack"])
     ap.add_argument("--mode", action="append", choices=["none", "general", "strict"])

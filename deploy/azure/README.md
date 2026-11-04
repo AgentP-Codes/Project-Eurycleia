@@ -63,3 +63,31 @@ straight into Key Vault) and switch the agent's model; results record which mode
     ./setup.sh model azure gpt-5-mini              # back to the Azure deployment
 
 That provider bills you directly; it isn't paid from your Azure credit.
+
+## Approving refunds
+
+Every refund waits for a person's yes. By default the agent posts each one in the report channel with what
+Eurycleia knows about it (whose payment, how much, whether it came from trusted data) and waits for a reaction:
+:white_check_mark: approves, :x: refuses, and no answer within two minutes refuses.
+
+- Give the Slack app the **reactions:read** scope as well as chat:write (Slack app settings, OAuth & Permissions,
+  then reinstall the app to the workspace).
+- `./setup.sh approver slack 300 U0123ABC` waits five minutes and counts only that Slack user's reactions (your
+  member id is in your Slack profile, under the three dots).
+- For a long unattended round, `./setup.sh approver simulated` uses a stand-in reviewer that approves only genuine
+  duplicate-charge refunds. Results record which approver was used, so simulated approvals are never mistaken
+  for a person's.
+
+## Live demo page
+
+    ./setup.sh demo          # prints the page's address
+    ./setup.sh demo off      # takes it down
+
+A public web page that shows the test as it runs: each email as it arrives, what the AI did with and without
+Eurycleia, what was blocked and why, refunds waiting for approval, and running totals. It's served from your
+storage account's static website, and the agent updates it with its own identity, allowed to write that one
+container only.
+
+The page is public, so it only ever shows made-up data, and even then email addresses become the customer's id
+or "an outside address", payment ids "a payment" and chat channels "the team channel". What the AI read is never
+shown, only what it did.
