@@ -11,6 +11,7 @@
 - A live demo page (`./setup.sh demo`): a public web page that follows the test as it runs, each email with what the AI did without and with Eurycleia, what was blocked and why, refunds waiting for approval, and running totals. The agent publishes it with its own Azure identity, allowed to write that one storage container only. Only made-up data is ever shown, and even then email addresses, payment ids, phone and card numbers, chat channels and canary codes are hidden; what the AI read is never shown, only what it did
 - Emails written to the no-email folder in the same clock tick no longer replace each other (found by CI)
 - The public repository builds and checks the live test image without trying to publish it
+- Test and build tools: msgpack updated to 1.2.4 for a newly published vulnerability (not part of what eurycleia installs)
 - The AgentDojo runner works with Azure OpenAI (`--provider azure`), signing in with `az login` or the machine's own identity, so the live test's model can be run on the public benchmark without storing a key
 
 **Security fixes** (nine issues reported privately by [rust-smith](https://github.com/rust-smith); thank you)
