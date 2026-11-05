@@ -67,7 +67,7 @@ def test_home_folder_falls_back_to_the_old_one(tmp_path, monkeypatch):
 
 
 def test_cli_finds_an_old_policy_file(tmp_path):
-    (tmp_path / "taskvault.yaml").write_text(Path(POLICY).read_text())
+    (tmp_path / "taskvault.yaml").write_text(Path(POLICY).read_text(encoding="utf-8"))
     r = _run("-m", "eurycleia", "check", cwd=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "eurycleia.yaml" not in r.stdout + r.stderr
@@ -88,8 +88,9 @@ def _connected_by_05(tmp_path):
                "args": ["-m", "taskvault", "serve", "--taskvault-connected", "--policy", POLICY, "--task",
                         "support_reply", "--trusted", "customer_id=12", "--audit", str(home / "audit.jsonl"),
                         "--shadow", "--", sys.executable, FAKE]}
-    cfg.write_text(json.dumps({"mcpServers": {"crm": wrapped}}))
-    (cfg.parent / (cfg.name + ".taskvault-backup")).write_text(json.dumps({"mcpServers": {"crm": original}}))
+    cfg.write_text(json.dumps({"mcpServers": {"crm": wrapped}}), encoding="utf-8")
+    (cfg.parent / (cfg.name + ".taskvault-backup")).write_text(json.dumps({"mcpServers": {"crm": original}}),
+                                                               encoding="utf-8")
     (home / "connections.json").write_text(json.dumps({str(cfg.resolve()): {
         "agent": "claude-desktop", "servers": {"crm": original}, "audit": str(home / "audit.jsonl")}}))
     return cfg, original
@@ -102,14 +103,14 @@ def test_agents_connected_by_05_keep_working(tmp_path, monkeypatch):
 
     # connecting again doesn't wrap twice, and doesn't overwrite the 0.5 backup with a wrapped copy
     assert connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(cfg)) == ["crm"]
-    args = json.loads(cfg.read_text())["mcpServers"]["crm"]["args"]
+    args = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]["args"]
     assert args.count("serve") == 1
     assert not (cfg.parent / (cfg.name + ".eurycleia-backup")).exists()
 
     assert set_mode(enforce=True) == ["crm"]
-    assert "--shadow" not in json.loads(cfg.read_text())["mcpServers"]["crm"]["args"]
+    assert "--shadow" not in json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]["args"]
     assert disconnect() == ["crm"]
-    assert json.loads(cfg.read_text())["mcpServers"]["crm"] == original
+    assert json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"] == original
 
 
 def test_mcp_proxy_accepts_the_old_meta_key():
@@ -139,12 +140,12 @@ def test_encryption_labels_are_unchanged():
             return b"k" * 32
 
     assert audit_key(Provider()) == HKDF(SHA256(), 32, salt=None, info=b"taskvault-audit-log").derive(b"k" * 32)
-    boxes = (ROOT / "eurycleia" / "boxes.py").read_text()
+    boxes = (ROOT / "eurycleia" / "boxes.py").read_text(encoding="utf-8")
     assert boxes.count('info=b"taskvault-box"') == 2 and 'info=b"taskvault-" + purpose' in boxes
 
 
 @pytest.mark.parametrize("cmd", ["eurycleia", "eury", "taskvault"])
 def test_all_three_commands_are_declared(cmd):
     tomllib = pytest.importorskip("tomllib")       # Python 3.11+
-    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["scripts"]
+    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
     assert scripts[cmd] == "eurycleia.cli:main"

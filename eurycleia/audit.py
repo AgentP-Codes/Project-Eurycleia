@@ -192,7 +192,7 @@ class AuditLog:
         if not self.path:
             return self._head_mem
         try:
-            head = json.loads(self.head_path.read_text())
+            head = json.loads(self.head_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
         except (OSError, ValueError) as e:
@@ -235,7 +235,7 @@ class AuditLog:
         tmp = self.head_path.with_name(self.head_path.name + ".tmp")
         # the head holds only a position, a hash and a MAC: nothing secret, so no access list is needed
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps(head))
             f.flush()
             if self.fsync:

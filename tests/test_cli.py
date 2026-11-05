@@ -61,7 +61,7 @@ def test_cli_init_check_test(tmp_path, capsys):
 
 def test_cli_bad_policy_exit_code(tmp_path, capsys):
     bad = tmp_path / "p.yaml"
-    bad.write_text("sources: {crm: {fields: {x: secretish}}}")
+    bad.write_text("sources: {crm: {fields: {x: secretish}}}", encoding="utf-8")
     assert main(["check", "--policy", str(bad)]) == 2
     assert "policy error" in capsys.readouterr().err
 
@@ -81,9 +81,9 @@ def test_cli_plan_and_audit(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "did not come from trusted data" in out and "never used payments.refund" in out
     assert main(["audit", "verify", str(path)]) == 0
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     lines[1] = lines[1].replace('"allow"', '"block"')
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert main(["audit", "verify", str(path)]) == 1
 
 

@@ -54,7 +54,8 @@ class StdioMCPClient:
         except (AttributeError, OSError, ValueError):
             err = subprocess.DEVNULL     # e.g. under a test runner that captures stderr
         self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=err, text=True, bufsize=1, env=env, cwd=cwd)
+                                     stderr=err, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                     env=env, cwd=cwd)          # MCP messages are UTF-8, whatever the system uses
         self._id, self._lock, self.timeout = 0, threading.Lock(), timeout
         self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                     "clientInfo": {"name": "eurycleia", "version": __version__}})

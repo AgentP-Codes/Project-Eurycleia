@@ -41,7 +41,7 @@ def build(lock: Path) -> dict:
     sys.path.insert(0, str(ROOT))
     from eurycleia import __version__
     me = f"pkg:pypi/eurycleia@{__version__}"
-    comps = parse_lock(lock.read_text())
+    comps = parse_lock(lock.read_text(encoding="utf-8"))
     return {
         "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
         "serialNumber": f"urn:uuid:{uuid.uuid4()}",
@@ -61,5 +61,5 @@ if __name__ == "__main__":
     lock, out = Path(sys.argv[1]), Path(sys.argv[2])
     bom = build(lock)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(bom, indent=2) + "\n")
+    out.write_text(json.dumps(bom, indent=2) + "\n", encoding="utf-8")
     print(f"SBOM: eurycleia {bom['metadata']['component']['version']} + {len(bom['components'])} libraries -> {out}")

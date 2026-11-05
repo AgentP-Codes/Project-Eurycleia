@@ -16,7 +16,9 @@ from typing import Any
 
 
 def load(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()] if Path(path).exists() else []
+    if not Path(path).exists():
+        return []
+    return [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
 def latest(rows: Iterable[dict[str, Any]], key: Callable[[dict[str, Any]], Any]) -> list[dict[str, Any]]:

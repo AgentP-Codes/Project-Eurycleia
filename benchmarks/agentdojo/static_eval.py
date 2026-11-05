@@ -163,7 +163,7 @@ def main() -> int:
                 results.append(r)
                 print(summary(r), flush=True)
     if a.json:
-        Path(a.json).write_text(json.dumps(results, indent=1))
+        Path(a.json).write_text(json.dumps(results, indent=1), encoding="utf-8")
     return 0
 
 

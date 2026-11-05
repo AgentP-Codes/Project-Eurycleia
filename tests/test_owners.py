@@ -117,7 +117,7 @@ def test_share_internally_false_blocks_colleagues_even_where_they_are_allowed():
     import copy
 
     import yaml
-    raw = yaml.safe_load(POLICY.read_text())
+    raw = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
     raw["tasks"]["hr_helpdesk"]["sinks"]["email.send"]["allowed_recipients"].append("*@acme.example")
     sent = []
     v = Vault(Policy.from_dict(copy.deepcopy(raw)), {"crm.account": ACCOUNTS.get, "hr.employee": STAFF.get},
@@ -154,7 +154,7 @@ def test_bad_owner_settings_are_rejected(change, message):
     import copy
 
     import yaml
-    raw = yaml.safe_load(POLICY.read_text())
+    raw = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
     src = copy.deepcopy(raw["sources"]["crm.account"])
     src.update(change)
     raw["sources"]["crm.account"] = src
@@ -180,7 +180,7 @@ def test_the_quick_start_example_runs_as_documented(tmp_path):
     assert out.returncode == 0, out.stderr
     assert "[[vault:card_number:" in out.stdout and "blocked: recipient" in out.stdout
     assert "emails sent to: ['priya@example.com']" in out.stdout
-    assert "19 made-up attacks" in (root / "docs" / "quickstart.md").read_text()
+    assert "19 made-up attacks" in (root / "docs" / "quickstart.md").read_text(encoding="utf-8")
 
 
 def test_a_wildcard_in_a_contact_field_is_not_a_pattern():

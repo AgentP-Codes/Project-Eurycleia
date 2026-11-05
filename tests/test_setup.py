@@ -34,9 +34,10 @@ def company(tmp_path):
     c.close()
     docs = tmp_path / "docs"
     docs.mkdir()
-    (docs / "refund_policy.md").write_text("Refunds within 30 days.")
-    (docs / "pricing.md").write_text("CONFIDENTIAL: floor price $18")
-    (tmp_path / "suppliers.csv").write_text("id,name,bsb_account,abn\nS1,Bolt,062-000 12345678,51 824 753 556\n")
+    (docs / "refund_policy.md").write_text("Refunds within 30 days.", encoding="utf-8")
+    (docs / "pricing.md").write_text("CONFIDENTIAL: floor price $18", encoding="utf-8")
+    (tmp_path / "suppliers.csv").write_text("id,name,bsb_account,abn\nS1,Bolt,062-000 12345678,51 824 753 556\n",
+                                            encoding="utf-8")
     return tmp_path
 
 
@@ -78,7 +79,7 @@ def test_setup_writes_a_working_policy_without_copying_real_data(company):
     assert policy.sources["file.suppliers"].fields["bsb_account"] == "secret"
     assert policy.sources["docs.docs"].key_levels == {"pricing": "protected", "refund_policy": "normal"}
     for f in ("eurycleia.yaml", "fixtures.yaml", "setup-report.md"):
-        text = (out / f).read_text()
+        text = (out / f).read_text(encoding="utf-8")
         assert "Priya" not in text and "priya@" not in text and "0400 111 222" not in text
 
     # the generated connector code works against the real database
@@ -130,10 +131,10 @@ def test_classify_tool():
 
 def test_scan_cli(tmp_path, capsys):
     f = tmp_path / "notes.txt"
-    f.write_text("hello\nkey AKIAABCDEFGHIJKLMNOP\n")
+    f.write_text("hello\nkey AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
     assert main(["scan", str(f)]) == 1
     assert "notes.txt:2: API key or token" in capsys.readouterr().out
-    f.write_text("nothing here")
+    f.write_text("nothing here", encoding="utf-8")
     assert main(["scan", str(f)]) == 0
 
 
@@ -153,4 +154,4 @@ def test_setup_scans_a_real_postgres_database(tmp_path, pg_url):
     assert policy.sources["db.customers"].fields["card_number"] == "secret"
     assert policy.sources["db.customers"].owner_contact == "email"
     assert policy.sources["db.orders"].owner_field == "customer_id"
-    assert "Priya" not in (out / "eurycleia.yaml").read_text()
+    assert "Priya" not in (out / "eurycleia.yaml").read_text(encoding="utf-8")

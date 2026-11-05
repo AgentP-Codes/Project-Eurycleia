@@ -472,9 +472,9 @@ def run_setup(out_dir: str | Path, sqlite: list[str] | None = None, postgres: li
 
     policy_text = build_policy(sources, tools, domain, pseudonyms)
     fixtures_text = build_fixtures(sources)
-    targets["eurycleia.yaml"].write_text(policy_text)
-    targets["fixtures.yaml"].write_text(fixtures_text)
-    targets["eurycleia_app.py"].write_text(build_app(sources))
+    targets["eurycleia.yaml"].write_text(policy_text, encoding="utf-8")
+    targets["fixtures.yaml"].write_text(fixtures_text, encoding="utf-8")
+    targets["eurycleia_app.py"].write_text(build_app(sources), encoding="utf-8")
 
     checks = []
     policy = Policy.load(targets["eurycleia.yaml"])
@@ -484,7 +484,7 @@ def run_setup(out_dir: str | Path, sqlite: list[str] | None = None, postgres: li
     checks += [f"warning: {w}" for w in report.warnings]
     if domain == "example.com":
         checks.append("TODO: set internal_domains to your company's email domain")
-    targets["setup-report.md"].write_text(build_report(sources, tools, checks))
+    targets["setup-report.md"].write_text(build_report(sources, tools, checks), encoding="utf-8")
 
     fields = sum(len(s.columns) for s in sources)
     counts = {lvl: sum(f.level == lvl for s in sources for f in s.columns.values())

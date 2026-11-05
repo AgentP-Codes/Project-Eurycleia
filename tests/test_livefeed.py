@@ -123,7 +123,7 @@ def test_a_new_round_starts_with_fresh_totals(tmp_path):
 
 
 def test_the_page_never_puts_feed_text_into_html():
-    page = PAGE.read_text()
+    page = PAGE.read_text(encoding="utf-8")
     assert "live/feed.json" in page and "textContent" in page
     assert "innerHTML" not in page and "insertAdjacentHTML" not in page and "document.write" not in page
     assert "<script src" not in page and "<link" not in page                 # nothing loaded from elsewhere

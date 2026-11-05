@@ -37,7 +37,7 @@ class Fixtures:
 
     @classmethod
     def load(cls, path: str | Path) -> Fixtures:
-        raw = yaml.safe_load(Path(path).read_text()) or {}
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         records = {s: {str(k): v for k, v in (recs or {}).items()} for s, recs in (raw.get("sources") or {}).items()}
         return cls(records=records, trusted=raw.get("trusted") or {}, attacker=raw.get("attacker", ATTACKER))
 

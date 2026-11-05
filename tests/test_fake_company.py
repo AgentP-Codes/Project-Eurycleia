@@ -77,7 +77,7 @@ def test_an_older_company_gets_the_harder_attacks_added_without_changing_anythin
     old.pop("version")
     fake_company.write(old, tmp_path)
     assert fake_company.upgrade(tmp_path, "a.b@gmail.com")
-    new = json.loads((tmp_path / "company.json").read_text())
+    new = json.loads((tmp_path / "company.json").read_text(encoding="utf-8"))
     assert new["tickets"][:60] == old["tickets"] and len(new["tickets"]) > 100
     assert new["customers"] == old["customers"] and new["canaries"] == old["canaries"]
     assert not fake_company.upgrade(tmp_path, "a.b@gmail.com")             # only once

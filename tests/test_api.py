@@ -251,17 +251,17 @@ def test_connection_file_is_private_atomic_and_only_removed_by_its_owner(api, tm
     import os
     import stat
     path = tmp_path / "api.json"
-    path.write_text("{}")
+    path.write_text("{}", encoding="utf-8")
     if os.name != "nt":
         path.chmod(0o666)
     api.write_connection_file(path)
-    assert json.loads(path.read_text())["token"] == api.token
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == api.token
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600           # a loose existing file is replaced
     api.remove_connection_file()
     assert not path.exists()
     api.write_connection_file(path)
-    path.write_text(json.dumps({"token": "someone else", "pid": 1}))
+    path.write_text(json.dumps({"token": "someone else", "pid": 1}), encoding="utf-8")
     api.remove_connection_file()
     assert path.exists()                                            # not ours any more: left alone
 
@@ -270,17 +270,17 @@ def test_connection_file_is_private_atomic_and_only_removed_by_its_owner(api, tm
 def test_connection_file_refuses_links_and_live_servers(api, tmp_path):
     import os
     target = tmp_path / "victim.txt"
-    target.write_text("important")
+    target.write_text("important", encoding="utf-8")
     link = tmp_path / "api.json"
     link.symlink_to(target)
     with pytest.raises(ApiError, match="symbolic link"):
         api.write_connection_file(link)
-    assert target.read_text() == "important"
+    assert target.read_text(encoding="utf-8") == "important"
     busy = tmp_path / "busy.json"
-    busy.write_text(json.dumps({"url": "x", "token": "t", "pid": os.getppid()}))       # a live process
+    busy.write_text(json.dumps({"url": "x", "token": "t", "pid": os.getppid()}), encoding="utf-8")   # a live process
     with pytest.raises(ApiError, match="another eurycleia api"):
         api.write_connection_file(busy)
     stale = tmp_path / "stale.json"
-    stale.write_text(json.dumps({"url": "x", "token": "t", "pid": 2 ** 22 + 12345}))   # long gone
+    stale.write_text(json.dumps({"url": "x", "token": "t", "pid": 2 ** 22 + 12345}), encoding="utf-8")   # long gone
     api.write_connection_file(stale)
-    assert json.loads(stale.read_text())["token"] == api.token
+    assert json.loads(stale.read_text(encoding="utf-8"))["token"] == api.token

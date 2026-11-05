@@ -31,9 +31,9 @@ def feed(settings: Settings, mailbox: Mailbox | FolderMailbox, count: int, kind:
          sleep=time.sleep, again: bool = False) -> list[str]:
     secret = settings.secret("feeder-secret")
     data = settings.data
-    company = json.loads((data / "company.json").read_text())
+    company = json.loads((data / "company.json").read_text(encoding="utf-8"))
     state_path = data / "state.json"
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     if again:                                   # a new round: every ticket can be sent again
         state["fed"] = []
         state["round"] = int(state.get("round", 1)) + 1
@@ -51,7 +51,7 @@ def feed(settings: Settings, mailbox: Mailbox | FolderMailbox, count: int, kind:
         msg.set_content(t["body"])
         mailbox.send_message(msg)
         fed.append(t["ticket_id"])
-        state_path.write_text(json.dumps(state, indent=2))
+        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
         sent.append(t["ticket_id"])
         print(f"sent {t['ticket_id']} ({t['kind']}): {t['subject']}", flush=True)
     return sent

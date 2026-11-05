@@ -67,7 +67,7 @@ def test_proxy_scopes_reads_and_blocks_exfiltration(upstream):
 
     ok = _call(proxy, "send_email", to=me["email"], subject="Hi", body=f"Hi {me['name']}")
     assert not ok.get("isError")
-    sent = [json.loads(l) for l in outbox.read_text().splitlines()]
+    sent = [json.loads(l) for l in outbox.read_text(encoding="utf-8").splitlines()]
     assert [m["to"] for m in sent] == ["priya.shah@example.com"]
 
 
@@ -101,5 +101,38 @@ def test_cli_serve_end_to_end_over_stdio(tmp_path):
     assert replies[0]["result"]["serverInfo"]["name"] == "eurycleia"
     assert replies[1]["result"]["isError"]
     assert not outbox.exists()
-    audit = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    audit = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(e.get("decision") == "block" for e in audit)
+
+
+def test_serve_speaks_utf8_even_when_the_system_doesnt(tmp_path):
+    """Windows gives programs its own code page (cp1252) for standard input and output; MCP messages are UTF-8.
+    Accents, dashes and other scripts must reach the app's server, and come back, unchanged."""
+    outbox = tmp_path / "out.jsonl"
+    cmd = [sys.executable, "-m", "eurycleia", "serve", "--policy", str(POLICY), "--task", "support_reply",
+           "--trusted", "customer_id=12", "--audit", str(tmp_path / "audit.jsonl"), "--", *FAKE]
+    env = {**os.environ, "FAKE_MCP_OUTBOX": str(outbox), "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=ROOT, env=env)
+
+    def ask(msg):
+        p.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        if "id" in msg:
+            return json.loads(p.stdout.readline().decode("utf-8"))
+
+    try:
+        ask({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+        ask({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        got = ask({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "get_customer", "arguments": {"customer_id": 12}}})
+        email = json.loads(got["result"]["content"][0]["text"])["email"]
+        body = "¡Hola! Gracias — café ☕, 日本語, Ελληνικά."
+        sent = ask({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                    "params": {"name": "send_email", "arguments": {"to": email, "subject": "Résumé", "body": body}}})
+        assert not sent["result"].get("isError"), sent
+    finally:
+        p.stdin.close()
+        p.wait(timeout=30)
+        p.stdout.close()
+    mail = json.loads(outbox.read_text(encoding="utf-8").splitlines()[-1])
+    assert mail["body"] == body and mail["subject"] == "Résumé"

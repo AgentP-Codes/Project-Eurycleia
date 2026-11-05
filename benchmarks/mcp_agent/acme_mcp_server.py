@@ -21,7 +21,7 @@ LOG = os.environ.get("ACME_LOG")
 
 def _log(kind: str, item: dict) -> None:
     if LOG:
-        with open(LOG, "a") as f:
+        with open(LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps({"kind": kind, **item}) + "\n")
 
 

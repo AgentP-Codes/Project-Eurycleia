@@ -151,7 +151,7 @@ class ApiServer:
             raise ApiError(f"{path} is a symbolic link; refusing to write the token through it")
         if path.exists():
             try:
-                other = int(json.loads(path.read_text()).get("pid") or 0)
+                other = int(json.loads(path.read_text(encoding="utf-8")).get("pid") or 0)
             except (ValueError, TypeError, AttributeError, OSError):
                 other = 0
             if other and other != os.getpid() and _alive(other):
@@ -177,7 +177,7 @@ class ApiServer:
         """Remove the connection file, but only if it's still ours (not a newer server's)."""
         path = getattr(self, "_conn_file", None)
         try:
-            if path and json.loads(path.read_text()).get("token") == self.token:
+            if path and json.loads(path.read_text(encoding="utf-8")).get("token") == self.token:
                 path.unlink()
         except (OSError, ValueError, AttributeError):
             pass

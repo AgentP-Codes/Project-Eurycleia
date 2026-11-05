@@ -247,7 +247,7 @@ def main() -> int:
     con.commit()
     con.close()
     csv_path = tmp / "customers.csv"
-    with open(csv_path, "w", newline="") as f:
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["id", "name", "email", "card_number"])
         w.writerows([i, f"Person {i}", f"p{i}@example.com", "4111 1111 1111 1111"] for i in range(n))
@@ -256,11 +256,11 @@ def main() -> int:
     t0 = time.perf_counter()
     rc = cli(["setup", "--sqlite", str(db), "--file", str(csv_path), "--dir", str(out), "--domain", "acme.example"])
     report(f"setup scan: {n:,}-row table + {n:,}-row CSV", f"{time.perf_counter() - t0:,.1f} s", f"exit {rc}")
-    policy = (out / "eurycleia.yaml").read_text()
+    policy = (out / "eurycleia.yaml").read_text(encoding="utf-8")
     assert rc == 0 and "card_number\": secret" in policy and "tfn\": secret" in policy
 
     print(f"\nall stress checks passed. Temporary files: {tmp}")
-    (tmp / "results.json").write_text(json.dumps(rows, indent=1))
+    (tmp / "results.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
     return 0
 
 

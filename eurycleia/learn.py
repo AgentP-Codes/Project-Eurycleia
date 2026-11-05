@@ -425,8 +425,8 @@ def write(result: Learned, out_policy: Path, out_report: Path, policy_path: str 
             f"{sum(result.tasks_seen.values())} watched tasks, starting from {Path(policy_path).name}.\n"
             f"# Review {out_report.name} first. To use it, copy it over your policy file (keep the old one) and run "
             "`eurycleia enforce`.\n# (Comments from the original policy aren't carried over; it is unchanged.)\n\n")
-    out_policy.write_text(head + yaml.safe_dump(result.policy, sort_keys=False, allow_unicode=True))
-    out_report.write_text(report_text(result, out_policy, audit_paths))
+    out_policy.write_text(head + yaml.safe_dump(result.policy, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    out_report.write_text(report_text(result, out_policy, audit_paths), encoding="utf-8")
 
 
 def report_text(r: Learned, out_policy: Path, audit_paths: list[str]) -> str:

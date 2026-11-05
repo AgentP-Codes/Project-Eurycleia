@@ -361,7 +361,7 @@ def main() -> None:
                           + (f"  ({r['error']})" if r.get("error") else ""), flush=True)
     model = getattr(provider, "model", a.provider)
     if a.out:
-        with open(a.out, "w") as f:
+        with open(a.out, "w", encoding="utf-8") as f:
             json.dump({"provider": a.provider, "model": model, "runs": a.runs, "pseudonyms": a.pseudonyms,
                        "results": rows,
                        "cost_aud": round(meter.spent_aud, 4) if meter else 0,

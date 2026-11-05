@@ -26,7 +26,7 @@ def _write(tmp_path, n=5, key=KEY):
 
 
 def _lines(path):
-    return path.read_text().splitlines()
+    return path.read_text(encoding="utf-8").splitlines()
 
 
 def test_a_keyed_log_verifies_and_marks_every_entry(tmp_path):
@@ -38,7 +38,7 @@ def test_a_keyed_log_verifies_and_marks_every_entry(tmp_path):
 
 def test_cutting_entries_off_the_end_is_detected(tmp_path):
     path = _write(tmp_path)
-    path.write_text("\n".join(_lines(path)[:3]) + "\n")
+    path.write_text("\n".join(_lines(path)[:3]) + "\n", encoding="utf-8")
     assert AuditLog(path).verify()                     # the plain chain can't tell...
     assert "cut off" in _log(tmp_path).problem()       # ...the keyed end-of-log record can
 
@@ -63,18 +63,18 @@ def test_rewriting_the_whole_log_without_the_key_is_detected(tmp_path):
         e["hash"] = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         prev = e["hash"]
         forged.append(json.dumps(e, sort_keys=True))
-    path.write_text("\n".join(forged) + "\n")
+    path.write_text("\n".join(forged) + "\n", encoding="utf-8")
     assert AuditLog(path).verify()                     # a forged plain chain passes the plain check
     assert _log(tmp_path).problem() is not None
 
 
 def test_a_forged_end_of_log_record_is_detected(tmp_path):
     path = _write(tmp_path)
-    path.write_text("\n".join(_lines(path)[:3]) + "\n")
-    head = json.loads((tmp_path / "audit.jsonl.head").read_text())
+    path.write_text("\n".join(_lines(path)[:3]) + "\n", encoding="utf-8")
+    head = json.loads((tmp_path / "audit.jsonl.head").read_text(encoding="utf-8"))
     last = json.loads(_lines(path)[-1])
     head.update(seq=last["seq"], hash=last["hash"])     # can't recompute its MAC without the key
-    (tmp_path / "audit.jsonl.head").write_text(json.dumps(head))
+    (tmp_path / "audit.jsonl.head").write_text(json.dumps(head), encoding="utf-8")
     assert "doesn't match the audit key" in _log(tmp_path).problem()
 
 
@@ -85,7 +85,7 @@ def test_the_wrong_key_is_detected(tmp_path):
 
 def test_writing_after_entries_were_cut_off_is_refused(tmp_path):
     path = _write(tmp_path)
-    path.write_text("\n".join(_lines(path)[:3]) + "\n")
+    path.write_text("\n".join(_lines(path)[:3]) + "\n", encoding="utf-8")
     with pytest.raises(AuditError, match="cut off"):
         _log(tmp_path).record("act", task=2)
 
@@ -119,13 +119,13 @@ def test_stripping_macs_and_deleting_the_head_is_never_accepted(tmp_path):
         e["hash"] = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         prev = e["hash"]
         forged.append(json.dumps(e, sort_keys=True))
-    path.write_text("\n".join(forged) + "\n")
+    path.write_text("\n".join(forged) + "\n", encoding="utf-8")
     (tmp_path / "audit.jsonl.head").unlink()
     assert "missing" in _log(tmp_path).problem()
     with pytest.raises(AuditError):
         _log(tmp_path).record("act", n=99)            # the vault refuses to carry on writing to it
     assert "missing" in _log(tmp_path).problem()
-    path.write_text("")                                # emptied completely: nothing left to check, but...
+    path.write_text("", encoding="utf-8")            # emptied completely: nothing left to check, but...
     assert _log(tmp_path).problem() is None            # ...an empty log with no head is just a new log
 
 
@@ -135,7 +135,7 @@ def test_seal_refuses_a_damaged_log(tmp_path):
     e = json.loads(lines[1])
     e["decision"] = "block"
     lines[1] = json.dumps(e, sort_keys=True)
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(AuditError, match="breaks the chain"):
         _log(tmp_path).seal()
 
@@ -193,7 +193,7 @@ def test_cli_verify_with_the_key(tmp_path, capsys):
         log.record("act", n=i)
     assert main(["audit", "verify", str(tmp_path / "audit.jsonl"), "--key", str(tmp_path / "k.key")]) == 0
     lines = _lines(tmp_path / "audit.jsonl")
-    (tmp_path / "audit.jsonl").write_text("\n".join(lines[:2]) + "\n")
+    (tmp_path / "audit.jsonl").write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
     assert main(["audit", "verify", str(tmp_path / "audit.jsonl"), "--key", str(tmp_path / "k.key")]) == 1
     assert "cut off" in capsys.readouterr().out
 
@@ -298,7 +298,7 @@ def test_windows_permission_failure_is_logged_not_fatal(tmp_path, monkeypatch, c
     monkeypatch.setattr(audit, "_WINDOWS", True)
     monkeypatch.setattr(audit, "_run", lambda cmd: type("W", (), {"stdout": '"a","S-1-5-1"', "returncode": 0})()
                         if cmd[0] == "whoami" else Done())
-    (tmp_path / "f").write_text("x")
+    (tmp_path / "f").write_text("x", encoding="utf-8")
     audit.owner_only(tmp_path / "f")
     assert "couldn't make f private" in caplog.text
 
@@ -307,7 +307,7 @@ def test_posix_files_are_owner_only(tmp_path):
     if os.name == "nt":
         pytest.skip("POSIX permissions")
     from eurycleia.audit import owner_only
-    (tmp_path / "f").write_text("x")
+    (tmp_path / "f").write_text("x", encoding="utf-8")
     os.chmod(tmp_path / "f", 0o644)
     owner_only(tmp_path / "f")
     assert os.stat(tmp_path / "f").st_mode & 0o777 == 0o600
@@ -419,7 +419,7 @@ def test_a_key_file_is_never_left_readable_when_windows_permissions_fail(tmp_pat
 def test_seal_refuses_a_keyed_log_whose_head_was_deleted(tmp_path):
     """Review finding: cut the end off a keyed log, delete its head, and `seal` used to accept it."""
     path = _write(tmp_path, n=5)
-    path.write_text("\n".join(_lines(path)[:4]) + "\n")
+    path.write_text("\n".join(_lines(path)[:4]) + "\n", encoding="utf-8")
     (tmp_path / "audit.jsonl.head").unlink()
     with pytest.raises(AuditError, match="written with a key"):
         _log(tmp_path).seal()

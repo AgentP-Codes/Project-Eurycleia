@@ -12,6 +12,7 @@
 - Emails written to the no-email folder in the same clock tick no longer replace each other (found by CI)
 - The public repository builds and checks the live test image without trying to publish it
 - Test and build tools: msgpack updated to 1.2.4 for a newly published vulnerability (not part of what eurycleia installs)
+- Windows: the MCP proxy (`eurycleia serve`) now always speaks UTF-8 with the app and the wrapped server. Before, Windows' own code page was used, so names and messages with accents or other scripts could be garbled or stop the proxy. Every settings, policy and log file is now read and written as UTF-8 too
 - The AgentDojo runner works with Azure OpenAI (`--provider azure`), signing in with `az login` or the machine's own identity, so the live test's model can be run on the public benchmark without storing a key
 
 **Security fixes** (nine issues reported privately by [rust-smith](https://github.com/rust-smith); thank you)

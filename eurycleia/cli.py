@@ -203,7 +203,7 @@ def cmd_scan(a: argparse.Namespace) -> int:
     from .detect import KINDS, scan_text
     found = 0
     for f in a.files:
-        text = Path(f).read_text(errors="replace")
+        text = Path(f).read_text(encoding="utf-8", errors="replace")
         for kind, s, _e in scan_text(text):
             line = text.count("\n", 0, s) + 1
             print(f"{f}:{line}: {KINDS[kind].label} ({KINDS[kind].level})")
@@ -346,7 +346,8 @@ def cmd_init(a: argparse.Namespace) -> int:
         if target.exists() and not a.force:
             print(f"{target} already exists (use --force to overwrite)", file=sys.stderr)
             return 1
-        target.write_text(resources.files("eurycleia.templates").joinpath(src).read_text())
+        target.write_text(resources.files("eurycleia.templates").joinpath(src).read_text(encoding="utf-8"),
+                          encoding="utf-8")
         print(f"created {target}")
     print("\nNext: edit the policy for your data, then run `eurycleia check` and `eurycleia test`.\n"
           "Then `eurycleia connect <agent>` puts it in front of your agent in watch mode.")
@@ -455,6 +456,9 @@ def cmd_serve(a: argparse.Namespace) -> int:
         vault = Vault(policy, sources, sinks, audit=_audit(a.audit, a.key), mode="shadow" if a.shadow else "enforce",
                       cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None,
                       boxes=boxes)
+        for stream in (sys.stdin, sys.stdout):     # MCP messages are UTF-8 (Windows would use its code page)
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
         ProxyServer(vault, a.task, trusted).serve(sys.stdin, sys.stdout)
     finally:
         client.close()

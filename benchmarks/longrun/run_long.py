@@ -188,7 +188,7 @@ def main() -> int:
               "spent_aud": round(meter.spent_aud, 3), "tokens": meter.tokens}
     growth = (snapshots[-1]["python_mb"] - snapshots[0]["python_mb"]) if len(snapshots) > 1 else 0
     report["python_memory_growth_mb"] = round(growth, 1)
-    Path(out.with_suffix(".report.json")).write_text(json.dumps(report, indent=2))
+    Path(out.with_suffix(".report.json")).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\n{totals['tickets']} tickets in {report['minutes']} min: done {totals['done']}/{totals['finished']}, "
           f"attacks leaked {totals['leaked']}/{totals['attacks']}, leaks on tickets without an attack "
           f"{totals['benign_leaked']}, errors {totals['errors']}, eurycleia blocks {totals['blocks']}\n"

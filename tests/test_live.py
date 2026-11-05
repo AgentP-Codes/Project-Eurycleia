@@ -239,7 +239,7 @@ def make_live(apps, s, provider=None):
 # ------------------------------------------------------------------ tests
 def test_seeding_puts_the_made_up_company_in_the_apps(world):
     apps, s = world
-    state = json.loads((s.data / "state.json").read_text())
+    state = json.loads((s.data / "state.json").read_text(encoding="utf-8"))
     assert len(apps.contacts) == 12 and len(state["customers"]) == 12
     assert all(p["email"].startswith("bramble.test.inbox+") for p in apps.contacts.values())
     assert all(rec["payments"] for rec in state["customers"].values())
@@ -253,7 +253,7 @@ def test_every_ticket_with_and_without_eurycleia(world):
     apps, s = world
     lv, mb = make_live(apps, s)
     sent = feeder.feed(s, mb, count=200)
-    assert len(sent) == len(json.loads((s.data / "company.json").read_text())["tickets"])
+    assert len(sent) == len(json.loads((s.data / "company.json").read_text(encoding="utf-8"))["tickets"])
     rows = lv.once()
     with_ = [r for r in rows if r["config"] == "with"]
     without = [r for r in rows if r["config"] == "without"]
@@ -281,7 +281,7 @@ def test_every_ticket_with_and_without_eurycleia(world):
 def test_a_canary_sent_out_is_caught_as_a_leak(world):
     apps, s = world
     lv, mb = make_live(apps, s)
-    company = json.loads((s.data / "company.json").read_text())
+    company = json.loads((s.data / "company.json").read_text(encoding="utf-8"))
     t = next(t for t in company["tickets"] if t["kind"] == "attack" and "attacker" in t["body"] or
              "+attacker@" in t["body"])
     feeder_secret = SECRETS["feeder-secret"]
@@ -301,7 +301,7 @@ def test_a_canary_sent_out_is_caught_as_a_leak(world):
 def test_a_forged_ticket_cannot_claim_to_be_a_customer(world):
     apps, s = world
     lv, mb = make_live(apps, s)
-    company = json.loads((s.data / "company.json").read_text())
+    company = json.loads((s.data / "company.json").read_text(encoding="utf-8"))
     victim = company["customers"][0]["email"]
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -330,7 +330,7 @@ def test_kill_switch_stops_handling_email(world, tmp_path):
     apps, s = world
     lv, mb = make_live(apps, s)
     feeder.feed(s, mb, count=2)
-    (s.data / "PAUSE").write_text("")
+    (s.data / "PAUSE").write_text("", encoding="utf-8")
     assert lv.once() == []
     (s.data / "PAUSE").unlink()
     assert lv.once()
@@ -345,7 +345,7 @@ def test_watch_mode_logs_instead_of_blocking(world, tmp_path):
     # watch mode blocks nothing itself; a refund still needs its approval, and a refused one doesn't happen
     refused = sum(r["approvals"]["asked"] - r["approvals"]["approved"] for r in rows)
     assert rows and sum(r["blocked"] for r in rows) == refused
-    log = (s.data / "audit.jsonl").read_text()
+    log = (s.data / "audit.jsonl").read_text(encoding="utf-8")
     assert "would_block" in log or '"shadow"' in log
 
 
@@ -401,7 +401,7 @@ def test_todays_spending_carries_over_between_scheduled_runs(world):
     assert again.over_budget()
     feeder.feed(s, again.mailbox, count=1)            # the feeder's own state survives the save
     again.save_spend()
-    assert json.loads((s.data / "state.json").read_text())["fed"]
+    assert json.loads((s.data / "state.json").read_text(encoding="utf-8"))["fed"]
 
 
 def test_only_one_run_at_a_time(world):
@@ -435,7 +435,7 @@ def test_no_email_mode_runs_every_ticket_through_a_folder(world):
     assert len(with_) == len(sent) and not any(r["leaked"] for r in with_ if r["kind"] == "attack")
     assert any(r["leaked"] for r in rows if r["config"] == "without")       # the leak check still sees replies
     assert not apps.smtp_sent and not apps.mail                              # nothing went near email
-    log = [json.loads(x) for x in (s.data / "mail" / "sent.jsonl").read_text().splitlines()]
+    log = [json.loads(x) for x in (s.data / "mail" / "sent.jsonl").read_text(encoding="utf-8").splitlines()]
     assert log and all(a.startswith("bramble.test.inbox+") for r in log for a in r["to"])
     assert not list((s.data / "mail" / "new").glob("*.eml")) and lv.once() == []   # each handled once
     with pytest.raises(ValueError):
@@ -477,14 +477,14 @@ def test_each_run_refunds_its_own_new_payment(world):
     second run's refund fail ("already refunded") and count against Eurycleia."""
     apps, s = world
     lv, mb = make_live(apps, s)
-    company = json.loads((s.data / "company.json").read_text())
+    company = json.loads((s.data / "company.json").read_text(encoding="utf-8"))
     feeder.feed(s, mb, count=200, kind="normal")
     rows = lv.once()
     refunded = [pi for pi, _c in apps.refunds]
     assert refunded and len(refunded) == len(set(refunded))                   # never the same payment twice
     wants = [r for r in rows if r["ticket"] in {t["ticket_id"] for t in company["tickets"] if t["wants_refund"]}]
     assert wants and all(r["done"] for r in wants)                             # both runs could refund
-    state = json.loads((s.data / "state.json").read_text())
+    state = json.loads((s.data / "state.json").read_text(encoding="utf-8"))
     assert set(refunded) <= {pi for c in state["customers"].values() for pi in c["payments"]}
 
 
@@ -587,7 +587,7 @@ def test_refunds_wait_for_a_person_in_slack(world, monkeypatch):
     monkeypatch.setattr(ap.time, "sleep", lambda x: None)
     apps.approve_if = lambda text: "payment_intent" in text and "from trusted data" in text
     lv, mb = make_live(apps, s)
-    company = json.loads((s.data / "company.json").read_text())
+    company = json.loads((s.data / "company.json").read_text(encoding="utf-8"))
     refund_tickets = {t["ticket_id"] for t in company["tickets"][:60] if t["wants_refund"]}
     feeder.feed(s, mb, count=60)
     rows = [r for r in lv.once() if r["config"] == "with"]

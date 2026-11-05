@@ -62,7 +62,7 @@ BENIGN = [
 
 def starting_policy() -> dict:
     """The demo policy, too tight: the agent reads the ticket through eurycleia, but may email no one."""
-    raw = yaml.safe_load((ROOT / "demo" / "policy.yaml").read_text())
+    raw = yaml.safe_load((ROOT / "demo" / "policy.yaml").read_text(encoding="utf-8"))
     task = raw["tasks"]["support_reply"]
     task["trusted"] = ["customer_id", "ticket_id"]
     task["reads"]["inbox.ticket"] = {"key": "{ticket_id}", "fields": ["body"]}
@@ -144,7 +144,7 @@ def main() -> int:
     rng = random.Random(a.seed)
     start = starting_policy()
     work = Path(tempfile.mkdtemp(prefix="eurycleia-learn-"))
-    (work / "policy.yaml").write_text(yaml.safe_dump(start, sort_keys=False))
+    (work / "policy.yaml").write_text(yaml.safe_dump(start, sort_keys=False), encoding="utf-8")
     audit = AuditLog(work / "audit.jsonl")
     result: dict = {"model": a.model, "watch": [], "check": []}
     try:
@@ -175,7 +175,7 @@ def main() -> int:
         print(f"\nStopped: {e}")
         result["stopped"] = str(e)
     result["cost_aud"] = round(meter.spent_aud, 4)
-    (out / "learn-results.json").write_text(json.dumps(result, indent=2))
+    (out / "learn-results.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     normal = [r for r in result["check"] if not r["attack"]]
     attacks = [r for r in result["check"] if r["attack"]]
     if "learn" in result:

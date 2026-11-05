@@ -190,7 +190,7 @@ def _state() -> dict[str, Any]:
         return {}
     if os.name != "nt" and stat.S_IMODE(p.stat().st_mode) & 0o077:   # made by an earlier version: lock it now
         owner_only(p)
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def _save_state(state: dict[str, Any]) -> None:

@@ -41,11 +41,12 @@ class Seeder:
             stripe = HttpClient("https://api.stripe.com", key)
         self.stripe = stripe
         self.state_path = settings.data / "state.json"
-        self.state: dict[str, Any] = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
-        self.company = json.loads((settings.data / "company.json").read_text())
+        self.state: dict[str, Any] = (json.loads(self.state_path.read_text(encoding="utf-8"))
+                                      if self.state_path.exists() else {})
+        self.company = json.loads((settings.data / "company.json").read_text(encoding="utf-8"))
 
     def save(self) -> None:
-        self.state_path.write_text(json.dumps(self.state, indent=2))
+        self.state_path.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
 
     def check_company(self) -> None:
         user, _, host = self.settings.inbox.partition("@")

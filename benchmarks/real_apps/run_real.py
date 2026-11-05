@@ -228,7 +228,7 @@ def run_ticket(apps: Apps, provider, sc: Scenario, config: str, contacts: dict[s
 def cmd_run(a) -> int:
     apps = Apps()
     if apps.hubspot:
-        state = json.loads(STATE.read_text()) if STATE.exists() else {}
+        state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
         if "contacts" not in state:
             state = state_file_update(STATE, contacts=apps.seed_contacts())
         contacts = state["contacts"]
@@ -265,7 +265,7 @@ def cmd_run(a) -> int:
                     row = {"model": model, "config": config, "scenario": sc.name, "injected": sc.injected,
                            "run": run, "real_apps": real_apps, **r,
                            "cost_aud": round((meter.spent_aud if meter else 0) - before, 5)}
-                    with out.open("a") as f:
+                    with out.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(row) + "\n")
                     print(f"{config:<10} {sc.name:<28} run {run}: {'LEAK' if r['attack_succeeded'] else 'safe'} / "
                           f"{'done' if r['utility'] else 'not done'}  blocked {r['blocked']}, safety net "
@@ -355,12 +355,12 @@ def main() -> int:
     if a.cmd == "summarize":
         return summarize(Path(a.out))
     if a.cmd == "cleanup":
-        state = json.loads(STATE.read_text()) if STATE.exists() else {}
+        state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
         report, left = Apps().cleanup(state)
         for line in report:
             print(line)
         if left:
-            STATE.write_text(json.dumps(left, indent=2))
+            STATE.write_text(json.dumps(left, indent=2), encoding="utf-8")
             print(f"what couldn't be cleaned up is still listed in {STATE}; run cleanup again later")
         else:
             STATE.unlink(missing_ok=True)

@@ -48,7 +48,7 @@ class Feed:
         self._warned = False
         self._customers = {c["email"].lower(): c["customer_id"] for c in company.get("customers", [])}
         try:
-            self.state: dict = json.loads(self.path.read_text())
+            self.state: dict = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.state = {}
         self.state.setdefault("emails", [])

@@ -289,7 +289,7 @@ class FolderMailbox:
             msg[k] = v
         msg.set_content(body)
         uid = self._write("sent", msg)
-        with (self.folder / "sent.jsonl").open("a") as f:
+        with (self.folder / "sent.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "file": uid,
                                 "to": to, "subject": subject, "body": body}) + "\n")
         print(f"reply recorded (no-email mode, not emailed) to {', '.join(to)}: {subject[:80]}", flush=True)
@@ -483,8 +483,8 @@ class Live:
         self.settings = s = settings
         s.data.mkdir(parents=True, exist_ok=True)
         self.state_path = s.data / "state.json"
-        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
-        self.company = company or json.loads((s.data / "company.json").read_text())
+        self.state = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else {}
+        self.company = company or json.loads((s.data / "company.json").read_text(encoding="utf-8"))
         self.mailbox = mailbox or open_mailbox(s)
         if crm is None:
             crm = Crm(HttpClient("https://api.hubapi.com", s.secret("hubspot-token")))
@@ -552,7 +552,7 @@ class Live:
                     who = {**customer, "payments": [*customer["payments"], pi]}
             rows.append(self._run(mail, sender, who, ticket, config))
         self.mailbox.mark_read(mail.uid)
-        with self.results.open("a") as f:
+        with self.results.open("a", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
         return rows
@@ -592,7 +592,7 @@ class Live:
         """Which round of the test this is (feeder.py --again starts a new one), read fresh: the feeder may have
         started a new round after this run began."""
         try:
-            return int(json.loads(self.state_path.read_text()).get("round", 1))
+            return int(json.loads(self.state_path.read_text(encoding="utf-8")).get("round", 1))
         except (OSError, ValueError):
             return int(self.state.get("round", 1))
 
@@ -615,7 +615,8 @@ class Live:
             print(f"couldn't make a fresh test payment for {customer_id}: {str(e)[:120]}", flush=True)
             return None
         rec.setdefault("payments", []).append(pi)
-        disk = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}   # the feeder may
+        disk = (json.loads(self.state_path.read_text(encoding="utf-8"))   # the feeder may
+                if self.state_path.exists() else {})
         disk.setdefault("customers", {}).setdefault(customer_id, {}).setdefault("payments", []).append(pi)  # have
         self.state = {**self.state, **disk}                                              # written meanwhile
         self._save_state()
@@ -757,7 +758,7 @@ class Live:
             self.meter.spent_aud = 0.0
 
     def _save_state(self) -> None:
-        self.state_path.write_text(json.dumps(self.state, indent=2))
+        self.state_path.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
 
     def lock(self, stale_after: float = 1800) -> bool:
         """One run at a time (a scheduled job can start while the last run is still busy). Azure stops a run at
@@ -774,7 +775,7 @@ class Live:
             except FileNotFoundError:
                 pass
             return self.lock(stale_after)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
         return True
 
@@ -787,7 +788,7 @@ class Live:
 
     def save_spend(self) -> None:
         if self.meter is not None:
-            fresh = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
+            fresh = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else {}
             self.state = {**fresh, **{k: v for k, v in self.state.items() if k not in fresh}}
             self.state["spend"] = {datetime.now(timezone.utc).date().isoformat(): round(self.meter.spent_aud, 4)}
             self._save_state()
@@ -803,7 +804,7 @@ class Live:
     def post_report(self) -> None:
         text = self.report()
         (self.settings.data / "reports").mkdir(exist_ok=True)
-        (self.settings.data / "reports" / f"{datetime.now(timezone.utc).date()}.md").write_text(text)
+        (self.settings.data / "reports" / f"{datetime.now(timezone.utc).date()}.md").write_text(text, encoding="utf-8")
         if self.slack and self.settings.report_channel:
             try:
                 SlackMessageSink(self.slack)(self.settings.report_channel, text[:3000])
@@ -850,7 +851,7 @@ def sign(secret: str, ticket: str, reply_to: str) -> str:
 def load_results(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def summarise(rows: list[dict], label: str) -> str:

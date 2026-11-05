@@ -167,7 +167,7 @@ def main() -> None:
             print(f"\nStopped: the next ticket could pass the ${a.budget} budget. Results so far are kept.")
             break
     if a.out:
-        with open(a.out, "w") as f:
+        with open(a.out, "w", encoding="utf-8") as f:
             json.dump({"framework": a.framework, "provider": a.provider, "model": a.model, "results": rows}, f,
                       indent=2)
     print()

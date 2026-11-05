@@ -64,7 +64,7 @@ def test_simulated_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(R, "STATE", tmp_path / "state.json")
     monkeypatch.setattr(sys, "argv", ["run_real.py", "run"])
     assert R.main() == 0
-    rows = [json.loads(x) for x in (tmp_path / "real-apps-results.jsonl").read_text().splitlines()]
+    rows = [json.loads(x) for x in (tmp_path / "real-apps-results.jsonl").read_text(encoding="utf-8").splitlines()]
     direct = [r for r in rows if r["config"] == "direct" and r["injected"]]
     vault = [r for r in rows if r["config"] == "eurycleia"]
     assert all(r["attack_succeeded"] for r in direct)
@@ -102,12 +102,12 @@ def test_resume_only_skips_tickets_run_with_the_same_apps(tmp_path, monkeypatch)
     old = {"model": "scripted", "config": "direct", "scenario": "benign refund", "injected": False, "run": 1,
            "real_apps": [], "utility": True, "attack_succeeded": False, "leaks": [], "blocked": 0,
            "safety_net": 0, "tool_errors": 0, "error": None}
-    (tmp_path / "real-apps-results.jsonl").write_text(json.dumps(old) + "\n")
+    (tmp_path / "real-apps-results.jsonl").write_text(json.dumps(old) + "\n", encoding="utf-8")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     from eurycleia.connectors.base import Response
     monkeypatch.setattr(R, "Apps", lambda: A.Apps(transport=lambda *a: Response(200, {}, b'{"ok": true, "ts": "1"}')))
     monkeypatch.setattr(R.time, "sleep", lambda s: None)
     monkeypatch.setattr(sys, "argv", ["run_real.py", "run", "--scenarios", "benign refund", "--configs", "direct"])
     R.main()
-    rows = [json.loads(x) for x in (tmp_path / "real-apps-results.jsonl").read_text().splitlines()]
+    rows = [json.loads(x) for x in (tmp_path / "real-apps-results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2 and rows[1]["real_apps"] == ["chat (Slack)"]   # run again with the real app

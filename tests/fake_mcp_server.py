@@ -12,6 +12,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from demo.world import World  # noqa: E402
 
+for _stream in (sys.stdin, sys.stdout):       # MCP messages are UTF-8, like a real MCP server's
+    _stream.reconfigure(encoding="utf-8")
 world = World()
 OUTBOX = os.environ.get("FAKE_MCP_OUTBOX")
 
@@ -26,7 +28,7 @@ TOOLS = {
 
 
 def reply(rid, result):
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}) + "\n")
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -41,8 +43,8 @@ for line in sys.stdin:
     elif method == "tools/call":
         out = TOOLS[params["name"]](params.get("arguments") or {})
         if params["name"] == "send_email" and OUTBOX:
-            with open(OUTBOX, "a") as f:
-                f.write(json.dumps(world.outbox[-1]) + "\n")
+            with open(OUTBOX, "a", encoding="utf-8") as f:
+                f.write(json.dumps(world.outbox[-1], ensure_ascii=False) + "\n")
         if out is None:
             reply(rid, {"isError": True, "content": [{"type": "text", "text": "not found"}]})
         else:

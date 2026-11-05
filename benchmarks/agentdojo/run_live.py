@@ -141,7 +141,7 @@ def run(a) -> int:
     out = Path(a.out)
     done, spent = set(), 0.0
     if out.exists():
-        for line in out.read_text().splitlines():
+        for line in out.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
             if r.get("model") == a.model:
                 spent += r.get("cost_aud", 0) or 0          # money already spent on this model in this file
@@ -231,7 +231,7 @@ def _save(out: Path, row: dict) -> None:
 
 
 def summarize(path: Path) -> int:
-    rows = [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()]
+    rows = [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]
     finished = {(r["model"], r["attack"], r["suite"], r["mode"], r["user_task"], r["injection_task"])
                 for r in rows if "error" not in r}
     failed = {(r["model"], r["attack"], r["suite"], r["mode"], r["user_task"], r["injection_task"])
@@ -253,7 +253,7 @@ def summarize(path: Path) -> int:
         print(f"{model:<28} {suite:<10} {mode:<8} {pct(plain, 'utility'):<22} {pct(attacked, 'utility'):<22} "
               f"{pct(attacked, 'attack_effective')}  [AgentDojo's own verdict: {pct(attacked, 'attack_agentdojo')}]")
     costs: dict[str, float] = {}
-    for r in [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()]:
+    for r in [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]:
         costs[r["model"]] = costs.get(r["model"], 0) + (r.get("cost_aud") or 0)
     if costs:
         print("\nspent (estimated from reported tokens): " +

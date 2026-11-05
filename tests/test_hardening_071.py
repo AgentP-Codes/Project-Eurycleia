@@ -39,7 +39,7 @@ def test_connections_file_is_private(tmp_path):
 def test_an_old_readable_connections_file_is_locked_when_next_used(tmp_path):
     p = _state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({}))
+    p.write_text(json.dumps({}), encoding="utf-8")
     os.chmod(p, 0o644)
     from eurycleia.connect import ConnectError, report
     with pytest.raises(ConnectError):                      # nothing connected, but the file was read
@@ -170,7 +170,7 @@ def test_strict_company_domains_apply_to_real_sends():
     from eurycleia.vault import Blocked, Vault
     from tests.test_owners import ACCOUNTS
     from tests.test_owners import POLICY as OWNERS_POLICY
-    raw = yaml.safe_load(OWNERS_POLICY.read_text())
+    raw = yaml.safe_load(OWNERS_POLICY.read_text(encoding="utf-8"))
     raw["company_domains"] = ["harbourfreight.example"]
     sent = []
     v = Vault(Policy.from_dict(raw), {"crm.account": ACCOUNTS.get, "hr.employee": {}.get},
@@ -249,9 +249,9 @@ def test_connect_and_disconnect_keep_yaml_comments(tmp_path):
 
     from eurycleia.connect import disconnect, set_mode
     cfg = tmp_path / "config.yaml"
-    cfg.write_text(HERMES)
+    cfg.write_text(HERMES, encoding="utf-8")
     connect("hermes", POLICY, "support_reply", ["customer_id=12"], config=str(cfg), servers=["crm"])
-    text = cfg.read_text()
+    text = cfg.read_text(encoding="utf-8")
     for keep in ("# my Hermes settings - keep these notes!", "model: hermes3   # the local one",
                  "# the CRM server (ask Priya before changing)", "# files server, left alone",
                  "args: [--root, /data]", "other_setting: true  # trailing comment"):
@@ -259,9 +259,9 @@ def test_connect_and_disconnect_keep_yaml_comments(tmp_path):
     data = yaml.safe_load(text)
     assert "eurycleia" in " ".join(data["mcp_servers"]["crm"]["args"])
     set_mode(enforce=False)
-    assert "# files server, left alone" in cfg.read_text()
+    assert "# files server, left alone" in cfg.read_text(encoding="utf-8")
     disconnect("hermes")
-    back = cfg.read_text()
+    back = cfg.read_text(encoding="utf-8")
     assert yaml.safe_load(back) == yaml.safe_load(HERMES)
     assert "# my Hermes settings - keep these notes!" in back and "other_setting: true  # trailing comment" in back
     assert "# files server, left alone" in back and "args: [--root, /data]" in back

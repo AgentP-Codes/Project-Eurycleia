@@ -29,7 +29,7 @@ class FolderDocuments:
             if p.suffix.lower() in TEXT_SUFFIXES and p.resolve().parent == self.root and p.is_file():
                 if p.stat().st_size > self.max_bytes:
                     raise ValueError(f"{p.name} is larger than max_bytes")
-                return {"name": p.stem, "body": p.read_text(errors="replace")}
+                return {"name": p.stem, "body": p.read_text(encoding="utf-8", errors="replace")}
         return None
 
 
@@ -39,8 +39,8 @@ def read_table(path: str | Path) -> list[dict[str, Any]]:
         with path.open(newline="", encoding="utf-8-sig") as f:
             return [dict(r) for r in csv.DictReader(f)]
     if path.suffix.lower() == ".jsonl":
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    data = json.loads(path.read_text())
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, dict):
         data = next((v for v in data.values() if isinstance(v, list)), [data])
     return [r for r in data if isinstance(r, dict)]

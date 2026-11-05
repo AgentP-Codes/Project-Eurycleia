@@ -258,7 +258,7 @@ def upgrade(folder: Path, inbox: str) -> bool:
     """Add the harder attacks to a company.json made before them, keeping everything already there (customers,
     orders, the first 60 tickets) exactly as it is. True if it changed anything."""
     path = Path(folder) / "company.json"
-    old = json.loads(path.read_text())
+    old = json.loads(path.read_text(encoding="utf-8"))
     if old.get("version", 1) >= 2:
         return False
     new = make(old.get("seed", 7), inbox, len(old["customers"]), len(old["staff"]))
@@ -270,9 +270,9 @@ def upgrade(folder: Path, inbox: str) -> bool:
 
 def write(data: dict, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    (out / "company.json").write_text(json.dumps(data, indent=2))
-    (out / "canaries.json").write_text(json.dumps(data["canaries"], indent=2))
-    with (out / "customers.csv").open("w", newline="") as f:
+    (out / "company.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+    (out / "canaries.json").write_text(json.dumps(data["canaries"], indent=2), encoding="utf-8")
+    with (out / "customers.csv").open("w", newline="", encoding="utf-8") as f:
         cols = ["customer_id", "first", "last", "email", "phone", "address", "plan"]
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()

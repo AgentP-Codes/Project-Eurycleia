@@ -223,7 +223,7 @@ def test_boxes_cli_end_to_end(tmp_path, capsys):
         assert main(["boxes", "holder", *common, "--type", "customer", "--id", cid]) == 0
     csv_file = tmp_path / "customers.csv"
     csv_file.write_text("id,name,email,card_number\n12,Priya Shah,priya@example.com,4111 1111 1111 1111\n"
-                        "45,Tom Nguyen,tom@example.net,5555 5555 5555 4444\n")
+                        "45,Tom Nguyen,tom@example.net,5555 5555 5555 4444\n", encoding="utf-8")
     assert main(["boxes", "put", str(csv_file), *common, "--source", "crm.customer", "--key-column", "id",
                  "--holder-type", "customer", "--holder-field", "id"]) == 0
     out = capsys.readouterr().out

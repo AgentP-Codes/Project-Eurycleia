@@ -168,7 +168,7 @@ def test_a_crash_mid_write_can_be_repaired_without_hiding_tampering(tmp_path, ca
     log = AuditLog(path)
     for i in range(3):
         log.record("act", i=i)
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         f.write('{"seq": 3, "ts": 1, "ev')                      # power cut mid-write
     with pytest.raises(AuditError, match="audit repair"):
         AuditLog(path)
@@ -179,9 +179,9 @@ def test_a_crash_mid_write_can_be_repaired_without_hiding_tampering(tmp_path, ca
     fixed.record("act", i=3)
     assert AuditLog(path).verify()
 
-    lines = path.read_text().splitlines()                    # damage in the MIDDLE is not a crash
+    lines = path.read_text(encoding="utf-8").splitlines()                    # damage in the MIDDLE is not a crash
     lines[1] = lines[1][:-5]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(AuditError):
         AuditLog.repair(path)
 
@@ -205,7 +205,7 @@ def base64_of(b):
 def test_policies_of_the_wrong_shape_give_a_policy_error(tmp_path, text):
     from eurycleia import PolicyError
     p = tmp_path / "p.yaml"
-    p.write_text(text)
+    p.write_text(text, encoding="utf-8")
     with pytest.raises(PolicyError):
         Policy.load(p)
 
@@ -353,9 +353,9 @@ def test_windows_file_lock_unlocks_the_byte_it_locked(tmp_path, monkeypatch):
     for i in range(300):                               # bigger than one read buffer
         log.record("act", i=i, pad="x" * 50)
     assert audit_mod.AuditLog(path).verify()
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     lines[5] = lines[5][:-5]                            # damage near the start: reading stops early
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(audit_mod.AuditError, match="not valid JSON"):
         audit_mod.AuditLog(path)
     with pytest.raises(audit_mod.AuditError):

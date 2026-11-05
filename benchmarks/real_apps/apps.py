@@ -420,11 +420,11 @@ def wrong_refunds(events: list[Event], right: str) -> list[str]:
 
 
 def state_file_update(path, **add) -> dict:
-    state = json.loads(path.read_text()) if path.exists() else {}
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     for k, v in add.items():
         if isinstance(v, list):
             state.setdefault(k, []).extend(v)
         else:
             state[k] = v
-    path.write_text(json.dumps(state, indent=2))
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state

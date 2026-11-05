@@ -112,7 +112,7 @@ class Policy:
     @classmethod
     def load(cls, path: str | Path) -> Policy:
         try:
-            raw = yaml.safe_load(Path(path).read_text()) or {}
+            raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as e:
             raise PolicyError(f"{path}: invalid YAML: {e}") from e
         return cls.from_dict(raw)

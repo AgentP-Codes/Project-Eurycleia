@@ -30,16 +30,16 @@ def claude_config(tmp_path):
     cfg.write_text(json.dumps({"mcpServers": {
         "crm": {"command": sys.executable, "args": [FAKE], "env": {"X": "1"}},
         "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]}},
-        "otherSetting": True}, indent=2))
+        "otherSetting": True}, indent=2), encoding="utf-8")
     return cfg
 
 
 def test_connect_wraps_servers_in_watch_mode_and_disconnect_restores_them(tmp_path):
     cfg = claude_config(tmp_path)
-    original = json.loads(cfg.read_text())
+    original = json.loads(cfg.read_text(encoding="utf-8"))
     names = connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(cfg), servers=["crm"])
     assert names == ["crm"]
-    data = json.loads(cfg.read_text())
+    data = json.loads(cfg.read_text(encoding="utf-8"))
     crm = data["mcpServers"]["crm"]
     assert MARK in crm["args"] and "--shadow" in crm["args"]
     assert crm["args"][crm["args"].index("--") + 1:] == [sys.executable, FAKE]      # original command kept
@@ -48,27 +48,27 @@ def test_connect_wraps_servers_in_watch_mode_and_disconnect_restores_them(tmp_pa
     assert (tmp_path / "claude_desktop_config.json.eurycleia-backup").exists()
     assert connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(cfg),
                    servers=["crm"]) == ["crm"]                                        # connecting twice is harmless
-    assert json.loads(cfg.read_text())["mcpServers"]["crm"]["args"].count(MARK) == 1
+    assert json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]["args"].count(MARK) == 1
 
     assert set_mode(True) == ["crm"]
-    assert "--shadow" not in json.loads(cfg.read_text())["mcpServers"]["crm"]["args"]
+    assert "--shadow" not in json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]["args"]
     assert set_mode(False) == ["crm"]
-    assert "--shadow" in json.loads(cfg.read_text())["mcpServers"]["crm"]["args"]
+    assert "--shadow" in json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]["args"]
 
     assert disconnect("claude-desktop") == ["crm"]
-    assert json.loads(cfg.read_text()) == original
+    assert json.loads(cfg.read_text(encoding="utf-8")) == original
 
 
 def test_hermes_yaml_settings(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(yaml.safe_dump({"model": "hermes3", "mcp_servers": {
-        "crm": {"command": sys.executable, "args": [FAKE]}}}))
-    original = yaml.safe_load(cfg.read_text())
+        "crm": {"command": sys.executable, "args": [FAKE]}}}), encoding="utf-8")
+    original = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     connect("hermes", POLICY, "support_reply", ["customer_id=12"], config=str(cfg))
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert MARK in data["mcp_servers"]["crm"]["args"] and data["model"] == "hermes3"
     disconnect("hermes")
-    assert yaml.safe_load(cfg.read_text()) == original
+    assert yaml.safe_load(cfg.read_text(encoding="utf-8")) == original
 
 
 @pytest.mark.parametrize("mode", ["watch", "enforce"])
@@ -78,7 +78,7 @@ def test_the_rewritten_command_really_protects_the_server(tmp_path, mode):
     audit = tmp_path / "audit.jsonl"
     connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(cfg), servers=["crm"],
             audit=str(audit), enforce=mode == "enforce")
-    entry = json.loads(cfg.read_text())["mcpServers"]["crm"]
+    entry = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["crm"]
     outbox = tmp_path / "out.jsonl"
     msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -88,7 +88,7 @@ def test_the_rewritten_command_really_protects_the_server(tmp_path, mode):
                        capture_output=True, text=True, cwd=ROOT, timeout=60,
                        env={**os.environ, **entry.get("env", {}), "FAKE_MCP_OUTBOX": str(outbox)})
     replies = [json.loads(line) for line in p.stdout.splitlines()]
-    decisions = [json.loads(line).get("decision") for line in audit.read_text().splitlines()]
+    decisions = [json.loads(line).get("decision") for line in audit.read_text(encoding="utf-8").splitlines()]
     if mode == "enforce":
         assert replies[1]["result"]["isError"] and not outbox.exists() and "block" in decisions
     else:
@@ -127,7 +127,7 @@ def test_awkward_settings_files(tmp_path):
     """Found by stress testing: a Windows BOM or broken JSON crashed connect; a private settings file (which can
     hold API keys) became readable by others; a settings file that is a symbolic link was replaced by a copy."""
     import stat
-    base = json.loads(claude_config(tmp_path).read_text())
+    base = json.loads(claude_config(tmp_path).read_text(encoding="utf-8"))
     bom = tmp_path / "bom.json"
     bom.write_bytes(b"\xef\xbb\xbf" + json.dumps(base).encode())
     connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(bom), servers=["crm"])
@@ -136,22 +136,22 @@ def test_awkward_settings_files(tmp_path):
     assert json.loads(bom.read_bytes().decode("utf-8-sig")) == base
 
     broken = tmp_path / "broken.json"
-    broken.write_text('{"mcpServers": {')
+    broken.write_text('{"mcpServers": {', encoding="utf-8")
     with pytest.raises(ConnectError, match="isn't valid JSON"):
         connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(broken))
-    assert broken.read_text() == '{"mcpServers": {'
+    assert broken.read_text(encoding="utf-8") == '{"mcpServers": {'
 
     if os.name != "nt":
         private = tmp_path / "private.json"
-        private.write_text(json.dumps(base))
+        private.write_text(json.dumps(base), encoding="utf-8")
         private.chmod(0o600)
         connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(private), servers=["crm"])
         assert stat.S_IMODE(private.stat().st_mode) == 0o600
         real = tmp_path / "real.json"
-        real.write_text(json.dumps(base))
+        real.write_text(json.dumps(base), encoding="utf-8")
         link = tmp_path / "link.json"
         link.symlink_to(real)
         connect("claude-desktop", POLICY, "support_reply", ["customer_id=12"], config=str(link), servers=["crm"])
-        assert link.is_symlink() and MARK in real.read_text()
+        assert link.is_symlink() and MARK in real.read_text(encoding="utf-8")
         disconnect(config=str(link))
-        assert json.loads(real.read_text()) == base
+        assert json.loads(real.read_text(encoding="utf-8")) == base
