@@ -319,6 +319,7 @@ class _Server(ThreadingHTTPServer):
     def __init__(self, *a: Any, **kw: Any):
         super().__init__(*a, **kw)
         self._slots = threading.BoundedSemaphore(self.max_connections)
+        self._waiters = threading.BoundedSemaphore(self.max_connections)     # new connections waiting for a slot
         self._reading: dict[Any, float] = {}           # connections still sending their request -> when they opened
         self._reading_lock = threading.Lock()
 
@@ -341,16 +342,38 @@ class _Server(ThreadingHTTPServer):
         _hang_up(oldest)
         return True
 
+    slot_wait = 7.0                  # how long a new connection waits for a dropped one to let go of its slot
+
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
-            if not (self._drop_slowest() and self._slots.acquire(timeout=2)):
+            # Full up. Never wait here: this thread accepts every connection. Drop the slowest unfinished one and
+            # wait for its slot on a thread of our own. (On Linux the dropped connection lets go at once; on
+            # Windows its thread may only notice when its read times out, a few seconds later.)
+            if not self._waiters.acquire(blocking=False):
+                self.shutdown_request(request)         # already as many waiting as there are slots
+                return
+            if not self._drop_slowest():
+                self._waiters.release()
                 self.shutdown_request(request)         # every connection is busy being answered
                 return
+            t = threading.Thread(target=self._wait_for_slot, args=(request, client_address), daemon=True)
+            t.start()
+            return
         try:
             super().process_request(request, client_address)
         except Exception:
             self._slots.release()
             raise
+
+    def _wait_for_slot(self, request: Any, client_address: Any) -> None:
+        try:
+            got = self._slots.acquire(timeout=self.slot_wait)
+        finally:
+            self._waiters.release()
+        if not got:
+            self.shutdown_request(request)
+            return
+        self.process_request_thread(request, client_address)       # releases the slot when done
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         self.started_reading(request)
@@ -372,9 +395,16 @@ class _Server(ThreadingHTTPServer):
 
 
 def _hang_up(request: Any) -> None:
+    """Drop a connection that's still sending its request. Shutting it down wakes the thread reading it on Linux
+    and macOS; the short timeout also stops a client that keeps dripping bytes on Windows, where shutting down
+    doesn't interrupt a read already waiting (that thread lets go when its read times out)."""
     import socket
     try:
-        request.shutdown(socket.SHUT_RDWR)             # wakes the handler thread blocked reading it
+        request.settimeout(0.05)
+    except OSError:
+        pass
+    try:
+        request.shutdown(socket.SHUT_RDWR)
     except OSError:
         pass
 

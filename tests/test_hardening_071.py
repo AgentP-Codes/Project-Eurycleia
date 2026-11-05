@@ -96,8 +96,10 @@ def test_a_cards_last_four_digits_can_still_be_shown():
     assert "ending 1111" in json.dumps(out)
 
 
-def test_idle_and_trickling_connections_cant_lock_agents_out(monkeypatch):
-    """#7: filling every slot with connections that never finish their request doesn't block a real call."""
+@pytest.mark.parametrize("wakes_reader", [True, False], ids=["shutdown-wakes-reader", "windows-style"])
+def test_idle_and_trickling_connections_cant_lock_agents_out(monkeypatch, wakes_reader):
+    """#7: filling every slot with connections that never finish their request doesn't block a real call, whether
+    or not dropping a connection wakes the thread reading it (on Windows it doesn't: the read times out instead)."""
     import socket
     import time as _t
 
@@ -109,22 +111,34 @@ def test_idle_and_trickling_connections_cant_lock_agents_out(monkeypatch):
 
     monkeypatch.setattr(api_mod._Server, "max_connections", 4)
     monkeypatch.setattr(api_mod._Server, "read_deadline", 1.5)
+    monkeypatch.setattr(api_mod._Handler, "timeout", 2)
+    if not wakes_reader:
+        monkeypatch.setattr(api_mod, "_hang_up", lambda request: request.settimeout(0.05))
     srv = ApiServer(build_vault(remote_sinks(Policy.load(API_POLICY))), port=0).start()
     try:
         hogs = [socket.create_connection(("127.0.0.1", srv.port)) for _ in range(4)]
         for h in hogs:
             h.sendall(b"GET /v1/health HTTP/1.1\r\n")      # never finishes the headers
         _t.sleep(0.3)
-        assert call(srv, "GET", "/v1/health")[0] == 200     # at the cap, the slowest hog is dropped instead
         t0 = _t.monotonic()
-        while _t.monotonic() - t0 < 4:                      # a byte every half second still hits the deadline
+        assert call(srv, "GET", "/v1/health")[0] == 200     # at the cap, the slowest hog is dropped instead
+        assert _t.monotonic() - t0 < 4
+        drip = socket.create_connection(("127.0.0.1", srv.port))
+        drip.sendall(b"GET /v1/health HTTP/1.1\r\n")
+        drip.settimeout(0.5)
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < 6:                      # a byte every half second still hits the deadline
             try:
-                hogs[-1].sendall(b"x")
+                drip.sendall(b"x")
+                if drip.recv(1024) == b"":
+                    break                                   # the server hung up
+            except TimeoutError:
+                continue                                    # still connected: drip another byte
             except OSError:
                 break
-            _t.sleep(0.5)
-        assert _t.monotonic() - t0 < 3.5
-        for h in hogs:
+        assert _t.monotonic() - t0 < 4
+        assert call(srv, "GET", "/v1/health")[0] == 200     # and the server is still fine
+        for h in [*hogs, drip]:
             h.close()
     finally:
         srv.shutdown()
