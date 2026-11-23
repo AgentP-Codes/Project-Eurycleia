@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from eurycleia import Blocked, Policy
 from eurycleia.cli import main
@@ -155,3 +156,19 @@ def test_setup_scans_a_real_postgres_database(tmp_path, pg_url):
     assert policy.sources["db.customers"].owner_contact == "email"
     assert policy.sources["db.orders"].owner_field == "customer_id"
     assert "Priya" not in (out / "eurycleia.yaml").read_text(encoding="utf-8")
+
+
+def test_a_table_and_a_file_with_the_same_name_get_their_own_task(company):
+    """A customers table and a customers.csv used to make two `customer_request` tasks and two `get_customer`
+    tools; since a policy that names something twice is refused (0.8.0), setup's own policy wouldn't load."""
+    (company / "customers.csv").write_text("id,name,email,card_number\n7,Mia Lee,mia@example.com,"
+                                           "4111 1111 1111 1111\n", encoding="utf-8")
+    out = company / "out"
+    assert run_setup(out, sqlite=[str(company / "crm.db")], files=[str(company / "customers.csv")],
+                     domain="acme.example", echo=lambda s: None) == 0
+    policy = Policy.load(out / "eurycleia.yaml")
+    assert {"customer_request", "customer_2_request"} <= set(policy.tasks)
+    assert {"get_customer", "get_customer_2"} <= set(policy.tools)
+    assert set(yaml.safe_load((out / "fixtures.yaml").read_text(encoding="utf-8"))["trusted"]) >= \
+        {"customer_request", "customer_2_request"}
+    assert main(["test", "--policy", str(out / "eurycleia.yaml"), "--fixtures", str(out / "fixtures.yaml")]) == 0
