@@ -26,16 +26,23 @@ APPROVE = {"white_check_mark", "heavy_check_mark"}       # ✅ ✔️
 REFUSE = {"x", "no_entry", "no_entry_sign"}               # ❌ ⛔ 🚫
 
 
+def _one_line(value: Any, limit: int = 200) -> str:
+    """A value shown among the facts: one line, control and invisible characters made visible. A recipient is
+    the agent's text, and with a line break in it could otherwise add a made-up line to the facts."""
+    from .toolscan import show
+    return show(value if isinstance(value, str) else str(value), limit)
+
+
 def describe(req: ApprovalRequest, limit: int = 1500) -> str:
     """The request as plain text, facts first. The agent's part is quoted and cut short; it may be misleading."""
     f = req.facts or {}
-    lines = [f"Approval needed: {req.sink} (task {req.template}, #{req.task_id})", f"Why: {req.reason}", "",
-             "What Eurycleia knows:"]
+    lines = [f"Approval needed: {_one_line(req.sink)} (task {_one_line(req.template)}, #{_one_line(req.task_id)})",
+             f"Why: {_one_line(req.reason, 300)}", "", "What Eurycleia knows:"]
     for k, v in (f.get("trusted_inputs") or {}).items():
-        lines.append(f"  - {k}: {v}  (from your app, not the AI)")
+        lines.append(f"  - {_one_line(k, 60)}: {_one_line(v)}  (from your app, not the AI)")
     for r in f.get("recipients") or []:
         where = "from trusted data" if r.get("from_trusted_data") else "NOT from trusted data"
-        lines.append(f"  - goes to: {r.get('value')}  ({where}; {r.get('relation')})")
+        lines.append(f"  - goes to: {_one_line(r.get('value'))}  ({where}; {_one_line(r.get('relation'))})")
     if "read_untrusted_content" in f:
         lines.append(f"  - the task read outside content (an email, a web page): "
                      f"{'yes' if f['read_untrusted_content'] else 'no'}")

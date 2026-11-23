@@ -14,6 +14,11 @@ COPY eurycleia eurycleia
 COPY taskvault taskvault
 RUN pip install --no-deps .
 
+# Eumaeus (decoys for AI agents, a separate project) for the decoys and both setups: a built copy, checked by hash
+COPY deploy/live/wheels/eumaeus-0.2.1-py3-none-any.whl /tmp/
+RUN echo "d800344b4248d14ba96f32783810d5d26b65e5a2df9852051a2fd46a2fbdff63  /tmp/eumaeus-0.2.1-py3-none-any.whl" | sha256sum -c - \
+    && pip install --no-deps /tmp/eumaeus-0.2.1-py3-none-any.whl && rm /tmp/eumaeus-0.2.1-py3-none-any.whl
+
 COPY demo/__init__.py demo/pricing.py demo/results.py demo/
 COPY deploy/live deploy/live
 

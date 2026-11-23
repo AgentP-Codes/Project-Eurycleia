@@ -11,7 +11,7 @@
 >
 > Provided "as is", without warranty of any kind, under the [AGPL-3.0 licence](LICENSE). Its features describe design goals, not guarantees. Please read the full [Disclaimer](#disclaimer) before using it.
 
-**Status:** v0.7.1 beta · Feedback, issues and ideas are very welcome.
+**Status:** v0.8.0 beta · Feedback, issues and ideas are very welcome.
 
 **How this was built:** Eurycleia was designed and directed by @AgentP-Codes. Much of the code, tests and documentation were written with the help of Claude (Anthropic's AI). The live model tests were run by the project using its own API keys. All the code is open for review.
 
@@ -33,9 +33,17 @@ data, knows who it really belongs to, and keeps an attacker away from the agent'
 - **Keeps sensitive data in encrypted deposit boxes,** one per customer, department or client company, with a second key required for the most sensitive information.
 - **Lets you watch before you block.** Watch mode records what Eurycleia *would* have blocked without blocking anything, and `eurycleia report` summarises it.
 - **Writes the policy for you.** After watching, `eurycleia learn` drafts a policy from what the agent normally does, never from what looked like an attack, and shows what the draft would still block.
+- **Notices when a connector changes.** If an app's tools change after you approved them (a "rug pull"), the changed tools are held until a person approves the change, and descriptions with hidden instructions for the AI are flagged.
 - **Keeps a tamper-evident record** of what the agent read and did, with no real data values in it.
 - **Scans your data and writes a starter setup,** so you don't start from a blank page.
 - **Stays small.** Two required libraries, no AI company libraries, and it runs on an ordinary laptop.
+
+## What's new in 0.8
+
+- **0.8.0: connectors that can't change behind your back.** A connector you approved can later change what its tools say or take: new hidden instructions for the AI, or a new input to carry data out (a "rug pull", OWASP's ASI04). Eurycleia records each connector's tools the first time it runs them, and if a tool your policy uses changes, holds it until a person approves the change (`eurycleia tools review`, `eurycleia tools approve`). It also warns about descriptions with signs of hidden instructions ("tool poisoning"), and `eurycleia setup` won't copy one into your policy. Everything is checked on your own machine, without AI.
+- **Security fixes from our own review before release,** two of which affect 0.7.1 and earlier: `eurycleia setup` could be made to write an attacker's domain into the policy by a malicious connector's tool name, and the app connectors' web client sent its token along with a redirect to another site. Upgrading is recommended. See the [changelog](CHANGELOG.md).
+- **Works with [Eumaeus](https://github.com/AgentP-Codes/Eumaeus)**, our decoys for AI agents. Link them (`eumaeus link eurycleia`) and a decoy used by any agent on the computer locks Eurycleia down: every action is refused until a person looks and lifts it (`eurycleia lockdown clear`). Eumaeus' page also shows what Eurycleia blocked and which connectors are waiting for approval.
+- Even before that, the AI only ever sees your policy's descriptions and inputs, never the connector's own, and recipients are still checked against trusted data, so a poisoned tool that someone approved anyway still can't send customer data out.
 
 ## What's new in 0.7
 
@@ -214,6 +222,7 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 | `eurycleia report` / `enforce` / `watch` | See what was (or would have been) blocked; start or stop blocking |
 | `eurycleia learn --policy FILE` | Draft a policy from what the agent did in watch mode, with a report of every change |
 | `eurycleia serve ... -- <cmd>` | Run the MCP proxy yourself |
+| `eurycleia tools status\|review\|approve` | Connectors whose tools changed since you approved them, and approving the change |
 | `eurycleia api` | Local API for agents in TypeScript and JavaScript |
 | `eurycleia review` | Actions flagged for a person to look at |
 | `eurycleia scan FILE...` | Find secrets and personal data in text files |
@@ -234,6 +243,7 @@ Providers: `anthropic`, `openai`, `gemini`, `ollama`. We'd love to see your resu
 - **Reworded or encoded data** can sometimes reach a recipient the task already allows. Planner mode is designed to close this.
 - **Your app must supply trusted inputs honestly.** If "which customer is this?" comes from the email text, the protections don't hold.
 - **Setup is a draft.** Review what it writes, especially low-confidence fields listed in `setup-report.md`.
+- **The connector check has limits.** It notices a connector that changes what it says, not one that changes what it does. And an agent that can run commands or write files in your own account could approve a change itself: keep `~/.eurycleia` and the policy file out of its reach.
 - **Not independently audited,** and test results are limited: most attacks were written by the project, and live samples are small. New attack techniques appear all the time.
 - **It's one layer, not a complete security system.** It doesn't replace access controls, network security, monitoring, staff training or your AI provider's own safeguards.
 - **Bugs are possible,** including ones that could let data through. Keep backups, and don't make it your only protection.

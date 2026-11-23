@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.0
+
+**Connectors that can't change behind your back** (rug pulls, OWASP ASI04)
+- `eurycleia serve` records each connector's tool definitions the first time it runs it: every tool's description, its inputs and their descriptions, and the connector's name and version. It checks again when the session starts, when the connector says its tools changed, after an approval, and every 5 minutes
+- A tool the policy uses that changed, or is new, is held until a person approves it: hidden from the agent, refused if called, and refused too if the vault would reach it another way. Changes to tools the policy doesn't use, removed tools and new versions are reported, not held. With `--shadow` or `--on-tool-change warn`, nothing is held
+- `eurycleia tools status | review | approve | forget`: what changed, in plain words ("new input 'bcc'", "its description changed"), and approving all of a connector's changes or one tool at a time. An approval takes effect at the next tool call, without a restart. The app is told when the tool list changes
+- Every change is in the audit log (`tools.recorded`, `tools.changed`). Records are kept on this machine only, one private file per connector
+
+**Warnings about poisoned tool descriptions** (tool poisoning and shadowing)
+- A connector's descriptions are scanned, with fixed patterns and no AI, for instructions aimed at the AI, asking it to keep something from the user, pointing it at private files, telling it to copy data somewhere, hidden characters, and naming other tools. Strong signs and mild ones are kept apart: on the official reference connectors' 125 tool descriptions, none gives a strong warning
+- A tool with strong signs isn't approved the first time its connector is recorded: it waits for a person. `eurycleia setup` doesn't copy its description into the policy it writes, and the setup report lists the warnings
+
+**Containment, tested** with the published poisoning and shadowing examples: the agent only sees the policy's descriptions and inputs, never the connector's; an input the policy doesn't list ("bcc", "note") is refused; and a recipient planted by a description is refused like any other untrusted recipient
+
+**Works with Eumaeus** (decoys for AI agents, a separate project)
+- Linked (`eumaeus link eurycleia`, Eumaeus 0.2.0), a decoy used by any agent on the computer locks down `serve` and `api`: every action in every task is refused until a person lifts it. Reading still works. `eurycleia lockdown status | clear`, or `eumaeus clear`
+- A connector whose tools changed is reported to Eumaeus, whose page shows it with what Eurycleia blocked
+- The two talk through signed files in their own folders (nothing goes over the network); a signal without the shared key is ignored. Not linked, nothing changes
+
+**Security fixes** (found in our own review of 0.8.0 before release)
+- **High, affects 0.7.1 and earlier:** `eurycleia setup` wrote a connector's tool and input names into the policy as they came. A malicious connector could name a tool with a line break in it and add its own settings: for example a second `internal_domains` naming the attacker's domain, which replaced yours, so protected data could then be sent there. Setup still reported success. Now names that aren't plain (letters, digits, `_`, `-`, `.`) are left out and reported, every name written into a policy is quoted, and the same goes for table names and column headings from your own data. If you ran `setup` against a connector you don't fully trust, read the `internal_domains` and `link_domains` lines of the policy it wrote
+- **A policy with a setting twice is refused**, and so are YAML merge keys (`<<`). YAML quietly keeps the last of two keys, which is how the injected line took effect, and how a second `internal_domains` far down a file could hide from a reviewer. If your policy uses `<<`, write those settings out
+- **Medium, affects 0.7.1 and earlier:** the app connectors' web client followed a redirect to any site and sent the `Authorization` token along, even to plain http. A redirect is now followed only within the same site; any other is an error. `base_url` accepted `http://localhost.anything.example` as if it were this computer; plain http is now for `localhost`, `127.0.0.1` and `::1` only
+- In the new connector check (never released without these fixes): what a connector says is now shown on one line with control and invisible characters made visible, so a tool or input name can't wipe or rewrite what `eurycleia tools review` shows; the description scan reads the whole definition (input names, nested inputs, default values, hints, what a tool returns), not only the top-level descriptions; a very long or very large definition is flagged at once instead of being scanned slowly (80,000 characters took 35 seconds); definitions of any shape are handled without an error; a tool listed twice with different definitions, one too big to check, or a connector with more than 2,000 tools is held and can't be approved as it is; and `eurycleia api` in front of a connector now does the same check as `serve`
+- A connector that stops answering gets a time limit (120 seconds) and one that sends an endless message is cut off, instead of hanging the proxy or filling memory
+- In an approval request, each fact is one line: a recipient with a line break in it can no longer add a made-up line to "What Eurycleia knows" (possible in watch mode, where such a recipient isn't refused first)
+- The benchmark job's image installs every library at an exact version with its checksum (`bench.lock`); a document key is matched as an exact name (wildcards in it mean nothing)
+
+**What the connector check doesn't do**
+- It notices a connector that changes what it *says*. One that changes what it *does* while saying the same isn't caught by it; the limits on where data can go still apply
+- The description scan uses fixed patterns: it can be evaded (another language, unusual wording) and can raise false alarms. It informs a person's decision; it isn't the protection
+- Approvals and records are files in your user account. An agent that can run commands or write files as you (a coding agent, a file-system connector pointed at your home folder) could approve a change itself, as it could edit the policy. Don't give the agent you're protecting access to `~/.eurycleia` or the policy file
+
+**Also**
+- AgentDojo runs in Azure as its own job (`./setup.sh bench`, `./setup.sh bench results`), with the live test's model and identity, so a run doesn't depend on your computer staying awake or online. It carries on where it stopped if started again
+- All files Eurycleia's tests create stay in a temporary folder, never the real `~/.eurycleia`
+
 ## 0.7.1
 
 **Approvals that can't be talked around**

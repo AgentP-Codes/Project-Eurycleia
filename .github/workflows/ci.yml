@@ -93,6 +93,9 @@ jobs:
         run: pip-audit -r requirements/runtime.lock --require-hashes --disable-pip --strict
       - name: Known vulnerabilities in the test and build tools
         run: pip-audit -r requirements/ci.lock --require-hashes --disable-pip --strict
+      - name: Known vulnerabilities in the benchmark job's libraries (reported; doesn't fail the build)
+        continue-on-error: true
+        run: pip-audit -r benchmarks/agentdojo/bench.lock --require-hashes --disable-pip
       - name: The locks match what pyproject.toml asks for
         run: |
           python - <<'EOF'

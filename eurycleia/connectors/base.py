@@ -37,13 +37,28 @@ class Transport(Protocol):
     def __call__(self, method: str, url: str, headers: dict[str, str], body: bytes | None) -> Response: ...
 
 
+class _SameSiteRedirects(urllib.request.HTTPRedirectHandler):
+    """Python's default follows a redirect anywhere and sends every header along, including Authorization:
+    a service that redirects (or is tricked into it) would hand the token to another site, even over plain
+    http. Here a redirect is followed only to the same scheme, host and port; any other is an error."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if (old.scheme, old.netloc.lower()) != (new.scheme, new.netloc.lower()):
+            raise urllib.error.HTTPError(req.full_url, code, "redirect to another site refused "
+                                         "(the token stays put)", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def urllib_transport(timeout: float = 30) -> Transport:
+    opener = urllib.request.build_opener(_SameSiteRedirects())
+
     def send(method: str, url: str, headers: dict[str, str], body: bytes | None) -> Response:
         if not url.lower().startswith(("https://", "http://")):
             raise ValueError("only http(s) URLs are allowed")        # never file:// or custom schemes
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - https URLs from config
+            with opener.open(req, timeout=timeout) as r:  # noqa: S310 - https URLs from config
                 return Response(r.status, dict(r.headers), r.read())
         except urllib.error.HTTPError as e:
             return Response(e.code, dict(e.headers or {}), e.read())
@@ -57,8 +72,10 @@ class HttpClient:
     def __init__(self, base_url: str, token: str | TokenSource | None = None,
                  headers: dict[str, str] | None = None, transport: Transport | None = None,
                  auth_scheme: str = "Bearer"):
-        if not base_url.startswith("https://") and not base_url.startswith("http://localhost"):
-            raise ValueError("base_url must use https")
+        parts = urllib.parse.urlsplit(base_url)
+        local = parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1", "::1")
+        if not (parts.scheme == "https" and parts.hostname) and not local:
+            raise ValueError("base_url must use https (plain http only for localhost itself)")
         self.base_url = base_url.rstrip("/")
         self._token = token
         self.auth_scheme = auth_scheme            # "Bearer" (OAuth) or "Basic" (e.g. Zendesk API tokens)
@@ -75,9 +92,14 @@ class HttpClient:
                 json_body: Any = None, raw: bool = False, allow_404: bool = False,
                 form_body: dict[str, Any] | None = None) -> Any:
         url = path if path.startswith("https://") else self.base_url + "/" + path.lstrip("/")
+        if path.startswith("https://") and \
+                urllib.parse.urlsplit(path).netloc.lower() != urllib.parse.urlsplit(self.base_url).netloc.lower():
+            headers_auth: dict[str, str] = {}          # a full address on another site never gets this site's token
+        else:
+            headers_auth = self._auth()
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-        headers = {"Accept": "application/json", **self.headers, **self._auth()}
+        headers = {"Accept": "application/json", **self.headers, **headers_auth}
         body = None
         if json_body is not None:
             body = json.dumps(json_body).encode()
@@ -88,6 +110,8 @@ class HttpClient:
         r = self.transport(method, url, headers, body)
         if r.status == 404 and allow_404:
             return None
+        if 300 <= r.status < 400:
+            raise HttpError(r.status, "the service redirected to another site; refused, so the token stays put")
         if r.status >= 400:
             raise HttpError(r.status, r.text)
         return r if raw else (r.json() if r.body else None)

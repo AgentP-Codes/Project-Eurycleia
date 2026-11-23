@@ -118,7 +118,7 @@ class Vault:
                  approver: Approver | None = None,
                  boxes: Any = None,
                  on_flag: Callable[[FlagEvent], None] | None = None,
-                 model: str = "external"):
+                 model: str = "external", signals: Any = None):
         if mode not in ("enforce", "shadow"):
             raise ValueError("mode must be 'enforce' or 'shadow'")
         if model not in ("external", "internal"):
@@ -131,6 +131,7 @@ class Vault:
         self.audit = audit if audit is not None else AuditLog()
         self.mode, self.cipher, self.cache = mode, cipher, cache
         self.approver, self.on_flag, self.boxes = approver, on_flag, boxes
+        self.signals = signals          # eurycleia.signals.Channel, when linked with Eumaeus (decoys)
         self._fp_key = os.urandom(32)
         self._task_ids = itertools.count(1)
         # task ids are unique across processes (several MCP servers, restarts) writing to one audit log
@@ -410,6 +411,13 @@ class Task:
         # The checks and the call count run under the task's lock, so limits hold when tool calls run in
         # parallel. A human approval, opening a deposit box and the sink itself run outside it, so a slow
         # person or sink doesn't hold up the task's other calls (the call is already counted).
+        if self.vault.signals is not None and (lock := self.vault.signals.lockdown()) is not None:
+            # Eumaeus saw a decoy being used: an agent on this computer has been tricked. Nothing goes out
+            # until a person has looked and cleared it.
+            self._decide("act", "locked down: a decoy was used (Eumaeus)",
+                         shown="locked down: an agent on this computer used a decoy record, so every action is "
+                               "refused until a person clears it (`eurycleia lockdown clear`)",
+                         sink=sink, lockdown=str(lock.get("id", "")))
         try:
             with self._lock:
                 rule, args, recipient_args, recipients, n, shown = self._prepare(sink, args)

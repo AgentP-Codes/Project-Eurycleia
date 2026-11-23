@@ -25,8 +25,9 @@ class FolderDocuments:
         key = str(key)
         if not key or "/" in key or "\\" in key or key.startswith("."):
             return None
-        for p in sorted(self.root.glob(f"{key}.*")):
-            if p.suffix.lower() in TEXT_SUFFIXES and p.resolve().parent == self.root and p.is_file():
+        for p in sorted(self.root.iterdir()):          # an exact name match: '*', '?' and '[' in a key mean nothing
+            if p.stem == key and p.suffix.lower() in TEXT_SUFFIXES and p.resolve().parent == self.root \
+                    and p.is_file():
                 if p.stat().st_size > self.max_bytes:
                     raise ValueError(f"{p.name} is larger than max_bytes")
                 return {"name": p.stem, "body": p.read_text(encoding="utf-8", errors="replace")}

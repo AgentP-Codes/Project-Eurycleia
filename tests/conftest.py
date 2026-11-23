@@ -23,3 +23,10 @@ def pg_url(_pg_server):
     name = f"t{next(_db_ids)}"
     _pg_server.psql(f"CREATE DATABASE {name};")
     return _pg_server.get_uri(database=name)
+
+
+@pytest.fixture(autouse=True)
+def _private_home(tmp_path, monkeypatch):
+    """Nothing a test runs (connect, serve's tool records, the local API) writes to the real ~/.eurycleia.
+    A test that sets EURYCLEIA_HOME itself overrides this."""
+    monkeypatch.setenv("EURYCLEIA_HOME", str(tmp_path / "eurycleia-home"))

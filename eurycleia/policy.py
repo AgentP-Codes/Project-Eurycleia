@@ -27,6 +27,38 @@ import yaml
 from .derive import DeriveError, check_spec
 from .errors import EurycleiaError
 
+
+class _OneOfEachKey(yaml.SafeLoader):
+    """YAML normally lets a key appear twice and quietly keeps the last one. In a policy that hides things: a
+    second `internal_domains` further down replaces the one a reviewer read at the top. Here it's an error."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        seen: set = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise yaml.constructor.ConstructorError(
+                    None, None, "merge keys (<<) aren't allowed in a policy: write the settings out",
+                    key_node.start_mark)
+            key = self.construct_object(key_node, deep=True)
+            try:
+                dup = key in seen
+            except TypeError:
+                dup = False
+            if dup:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"the key {key!r} appears twice (line {key_node.start_mark.line + 1}); "
+                    "each setting may appear once", key_node.start_mark)
+            try:
+                seen.add(key)
+            except TypeError:
+                pass
+        return super().construct_mapping(node, deep)
+
+
+def load_yaml(text: str) -> Any:
+    """Parse a policy's YAML: the safe subset, and no key twice in one place."""
+    return yaml.load(text, Loader=_OneOfEachKey)  # noqa: S506 - a SafeLoader subclass
+
 LEVELS = ("secret", "protected", "normal")
 TRUST = ("trusted", "untrusted")
 
@@ -112,7 +144,7 @@ class Policy:
     @classmethod
     def load(cls, path: str | Path) -> Policy:
         try:
-            raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            raw = load_yaml(Path(path).read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as e:
             raise PolicyError(f"{path}: invalid YAML: {e}") from e
         return cls.from_dict(raw)

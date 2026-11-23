@@ -8,6 +8,8 @@
   eurycleia test   [--policy P] [--fixtures F]   run the worst-case attack suite (CI)
   eurycleia report [--audit FILE...]             what was (or would have been) blocked
   eurycleia serve  --task T --trusted k=v -- CMD run the MCP proxy in front of an MCP server
+  eurycleia tools  status|review|approve|forget   connectors whose tools changed since they were approved
+  eurycleia lockdown status|clear                 when Eumaeus (decoys) saw a tricked agent: see or lift it
   eurycleia audit  verify|show|seal FILE         check, read or start protecting an audit log
   eurycleia keys   init|shred PATH               manage a local customer key
   eurycleia scan FILE...                         find secrets and personal data in text files
@@ -123,7 +125,28 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--holder-keys", default=f"{STORE}/holder-keys")
     s.add_argument("--rollback-guard", default=os.environ.get("EURYCLEIA_ROLLBACK_GUARD"),
                    help="file (on other storage) that catches an old copy of the box database being restored")
+    s.add_argument("--on-tool-change", choices=["hold", "warn"], default="hold",
+                   help="when the connector's tools change since they were approved: hold the changed tools until "
+                        "someone approves them (default), or only warn. With --shadow, it only warns")
+    s.add_argument("--tool-pins", default=None, help=argparse.SUPPRESS)       # folder of approved tool records
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- command to start the upstream MCP server")
+
+    s = sub.add_parser("tools", help="connectors whose tools changed since they were approved (rug pulls)")
+    tsub = s.add_subparsers(dest="tools_cmd", required=True)
+    tsub.add_parser("status", help="every connector eurycleia has seen, and whether anything is waiting")
+    t = tsub.add_parser("review", help="what changed, tool by tool")
+    t.add_argument("server", nargs="?", help="a connector id from `eurycleia tools status` (default: all)")
+    t = tsub.add_parser("approve", help="approve what changed, so the held tools can be used again")
+    t.add_argument("server", help="a connector id from `eurycleia tools status`")
+    t.add_argument("--tool", action="append", default=None, help="approve only this tool (repeatable)")
+    t = tsub.add_parser("forget", help="forget a connector's record (it is recorded afresh next time it starts)")
+    t.add_argument("server")
+    for t in tsub.choices.values():
+        t.add_argument("--tool-pins", default=None, help=argparse.SUPPRESS)
+
+    s = sub.add_parser("lockdown", help="when Eumaeus (decoys, linked) saw a tricked agent: see or lift it")
+    s.add_argument("action", choices=["status", "clear"])
+    s.add_argument("--reason", default=None, help="a note kept with the clear (who looked, what they found)")
 
     s = sub.add_parser("audit", help="verify or read an audit log")
     s.add_argument("action", choices=["verify", "show", "repair", "seal"])
@@ -442,7 +465,16 @@ def cmd_serve(a: argparse.Namespace) -> int:
     cipher = _cipher(a.key)
     client = StdioMCPClient(upstream)
     try:
-        sources, sinks = upstream_bindings(policy.raw, client)
+        from .signals import Channel
+        from .toolpins import ToolGuard, ToolPins, policy_uses
+        audit = _audit(a.audit, a.key)
+        channel = Channel()
+        guard = ToolGuard(client, upstream, policy_uses(policy.raw, policy.tools),
+                          pins=ToolPins(a.tool_pins) if a.tool_pins else None,
+                          hold=a.on_tool_change == "hold" and not a.shadow, audit=audit,
+                          warn=lambda msg: print(msg, file=sys.stderr, flush=True),
+                          signals=channel if channel.linked else None)
+        sources, sinks = upstream_bindings(policy.raw, client, guard)
         boxes = None
         if a.boxes:
             from .boxes import BoxStore, LocalHolderKeys, box_sources
@@ -453,13 +485,13 @@ def cmd_serve(a: argparse.Namespace) -> int:
             boxes = BoxStore(a.boxes, LocalKeyProvider(a.key, create=False), LocalHolderKeys(a.holder_keys),
                              rollback_guard=getattr(a, "rollback_guard", None))
             sources.update(box_sources(policy, boxes))
-        vault = Vault(policy, sources, sinks, audit=_audit(a.audit, a.key), mode="shadow" if a.shadow else "enforce",
+        vault = Vault(policy, sources, sinks, audit=audit, mode="shadow" if a.shadow else "enforce",
                       cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None,
-                      boxes=boxes)
+                      boxes=boxes, signals=channel if channel.linked else None)
         for stream in (sys.stdin, sys.stdout):     # MCP messages are UTF-8 (Windows would use its code page)
             if hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", errors="replace")
-        ProxyServer(vault, a.task, trusted).serve(sys.stdin, sys.stdout)
+        ProxyServer(vault, a.task, trusted, guard=guard).serve(sys.stdin, sys.stdout)
     finally:
         client.close()
     return 0
@@ -471,6 +503,76 @@ def _load_agent(spec: str):
         raise SystemExit("--agent must look like module:function")
     sys.path.insert(0, str(Path.cwd()))
     return getattr(importlib.import_module(mod), fn)
+
+
+def cmd_tools(a: argparse.Namespace) -> int:
+    from .toolpins import ToolPins
+    from .toolscan import show
+    pins = ToolPins(a.tool_pins) if a.tool_pins else ToolPins()
+    if a.tools_cmd == "status":
+        recs = pins.all()
+        if not recs:
+            print("no connectors recorded yet (they are recorded the first time `eurycleia serve` starts them)")
+        for r in recs:
+            waiting = pins.pending(r["server"])
+            note = f"{len(waiting.lines())} change(s) waiting for approval" if waiting and not waiting.empty() \
+                else "as approved"
+            print(f"{r['server']}  {show(r.get('label'), 80)}  {len(r.get('approved') or {})} tools  {note}")
+        return 0
+    if a.tools_cmd == "review":
+        keys = [a.server] if a.server else [r["server"] for r in pins.all()]
+        found = False
+        for key in keys:
+            review = pins.pending(key)
+            if review is None or review.empty():
+                if a.server:
+                    print(f"{key}: nothing waiting; its tools are as approved")
+                continue
+            found = True
+            print(f"{show(review.label, 80)} ({key}) changed since it was approved:")
+            for line in review.lines():
+                print(f"  - {line}")
+            print(f"  approve all of it:   eurycleia tools approve {key}")
+            print(f"  or one tool:         eurycleia tools approve {key} --tool <name>")
+        if not found and not a.server:
+            print("nothing waiting: every connector's tools are as approved")
+        return 0
+    if a.tools_cmd == "approve":
+        done = pins.approve(a.server, a.tool)
+        if not done:
+            print(f"{a.server}: nothing to approve" + (" for those tools" if a.tool else ""))
+            return 1
+        print(f"approved {', '.join(show(d, 64) for d in done)}; they can be used from the next tool call")
+        return 0
+    if a.tools_cmd == "forget":
+        print("forgotten" if pins.forget(a.server) else f"no record for {a.server}")
+        return 0
+    return 2
+
+
+def cmd_lockdown(a: argparse.Namespace) -> int:
+    import time as _time
+
+    from .signals import Channel
+    from .toolscan import show
+    ch = Channel()
+    if not ch.linked:
+        print("not linked with Eumaeus (run `eumaeus link eurycleia` to link them)")
+        return 0
+    lock = ch.lockdown()
+    if a.action == "status":
+        if lock is None:
+            print("not locked down")
+            return 0
+        print(f"LOCKED DOWN since {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(lock['at']))}: "
+              f"{show(lock.get('detail', ''), 300)}\nlook at what happened, then: eurycleia lockdown clear")
+        return 1
+    if lock is None:
+        print("nothing to clear: not locked down")
+        return 0
+    ch.send("clear", detail=a.reason or "cleared by a person")
+    print("lockdown lifted in Eurycleia and Eumaeus; agents can act again")
+    return 0
 
 
 def cmd_audit(a: argparse.Namespace) -> int:
@@ -524,14 +626,25 @@ def cmd_api(a: argparse.Namespace) -> int:
         upstream = [x for x in a.upstream if x != "--"]
         if upstream:
             from .mcp import StdioMCPClient, upstream_bindings
+            from .toolpins import ToolGuard, policy_uses
             client = StdioMCPClient(upstream)
-            up_sources, up_sinks = upstream_bindings(policy.raw, client)
+            audit = _audit(a.audit, a.key)
+            # the same check as `serve`: a connector tool that changed since it was approved is refused
+            guard = ToolGuard(client, upstream, policy_uses(policy.raw, policy.tools), hold=not a.shadow,
+                              audit=audit, warn=lambda msg: print(msg, file=sys.stderr, flush=True))
+            guard.check(force=True)
+            up_sources, up_sinks = upstream_bindings(policy.raw, client, guard)
             sources.update(up_sources)
             sinks.update(up_sinks)
+        else:
+            audit = _audit(a.audit, a.key)
         cipher = _cipher(a.key)
         from .cache import EncryptedCache
-        vault = Vault(policy, sources, sinks, audit=_audit(a.audit, a.key), mode="shadow" if a.shadow else "enforce",
-                      cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None)
+        from .signals import Channel
+        channel = Channel()
+        vault = Vault(policy, sources, sinks, audit=audit, mode="shadow" if a.shadow else "enforce",
+                      cipher=cipher, cache=EncryptedCache(cipher, policy.cache_ttl_seconds) if cipher else None,
+                      signals=channel if channel.linked else None)
     server = ApiServer(vault, port=a.port, token=setting("API_TOKEN") or None)
     conn = server.write_connection_file(Path(a.connection_file) if a.connection_file else home() / "api.json")
     print(f"eurycleia api listening on {server.url} (this computer only)\n"
@@ -658,7 +771,8 @@ COMMANDS: dict[str, Any] = {
     "setup": cmd_setup, "init": cmd_init, "check": cmd_check, "test": cmd_test, "plan": cmd_report,
     "serve": cmd_serve, "api": cmd_api, "connect": cmd_connect, "disconnect": cmd_disconnect, "report": cmd_report,
     "enforce": cmd_enforce, "watch": cmd_watch, "review": cmd_review, "audit": cmd_audit, "keys": cmd_keys,
-    "scan": cmd_scan, "boxes": cmd_boxes, "learn": cmd_learn,
+    "scan": cmd_scan, "boxes": cmd_boxes, "learn": cmd_learn, "tools": cmd_tools,
+    "lockdown": cmd_lockdown,
 }
 
 if __name__ == "__main__":

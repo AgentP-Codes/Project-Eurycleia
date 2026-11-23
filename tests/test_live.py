@@ -34,6 +34,7 @@ class StandIns:
         self.smtp_sent: list = []
         self.contacts: dict[str, dict] = {}
         self.payments: dict[str, int] = {}
+        self.payment_owner: dict[str, str] = {}
         self.refunds: list[tuple[str, int]] = []
         self.slack: list[tuple[str, str]] = []
         self.props: set[str] = set()
@@ -125,10 +126,17 @@ class StandIns:
             assert headers["Authorization"] == "Bearer sk_test_x"
             if path == "/v1/customers":
                 return ok({"id": f"cus_{len(self.payments):06d}"})
+            if path == "/v1/payment_intents" and method == "GET":
+                who = parse_qs(u.query).get("customer", [""])[0]
+                mine = [{"id": pi, "object": "payment_intent", "amount": amt, "currency": "aud", "status": "succeeded",
+                         "created": 1780000000 + n, "description": "Bramblecove order (made-up)"}
+                        for n, (pi, amt) in enumerate(self.payments.items()) if self.payment_owner.get(pi) == who]
+                return ok({"object": "list", "data": mine[::-1][:int(parse_qs(u.query).get("limit", ["10"])[0])]})
             if path == "/v1/payment_intents":
                 assert data["payment_method"].startswith("pm_card_")
                 pi = f"pi_test{len(self.payments):06d}"
                 self.payments[pi] = int(data["amount"])
+                self.payment_owner[pi] = data.get("customer", "")
                 return ok({"id": pi})
             if path == "/v1/refunds":
                 self.refunds.append((data["payment_intent"], int(data["amount"])))
@@ -605,3 +613,55 @@ def test_with_nobody_to_approve_no_refund_happens(world):
     feeder.feed(s, mb, count=60)
     rows = [r for r in lv.once() if r["config"] == "with"]
     assert not any(o["app"] == "refund" and o["sent"] for r in rows for o in r["went_out"])
+
+
+# ------------------------------------------------------------------ with Eumaeus (decoys)
+def test_decoys_alone_and_with_eurycleia(tmp_path):
+    pytest.importorskip("eumaeus")
+    from eumaeus.signals import Channel as DecoySignals
+    apps, s = make_world(tmp_path)
+    s = settings(tmp_path, LIVE_CONFIGS="decoys,both")
+    lv, mb = make_live(apps, s)
+    assert (s.data / "link.json").exists() and (s.data / "eumaeus" / "link.json").exists()
+    sent = feeder.feed(s, mb, count=30)
+    rows = lv.once()
+    assert {r["config"] for r in rows} == {"decoys", "both"} and len(rows) == 2 * len(sent)
+    known = [r for r in rows if r["known_customer"]]
+    assert known and all(r["decoys"]["planted"] for r in known)          # every customer lookup got a decoy
+    for config in ("decoys", "both"):
+        att = [r for r in rows if r["config"] == config and r["kind"] == "attack"]
+        assert att and any(r["decoys"]["alerts"] for r in att)           # sending the whole record out trips it
+    assert not any(r["leaked"] for r in rows if r["config"] == "both" and r["kind"] == "attack")
+    assert DecoySignals(s.data / "eumaeus", "eumaeus").lockdown() is None   # lifted after every email
+    assert (s.data / "eumaeus" / "alerts.jsonl").exists()
+    for pi, _cents in apps.refunds:                                      # no decoy ever reached Stripe
+        assert pi in apps.payments
+    report = lv.report()
+    assert "Eumaeus alone:" in report and "Eumaeus and Eurycleia:" in report and "false alarms" in report
+
+
+def test_a_decoy_payment_is_refused_before_stripe(world):
+    pytest.importorskip("eumaeus")
+    from eumaeus.decoys import Registry
+    from eumaeus.tripwire import Tripwire
+    apps, s = world
+    lv, _mb = make_live(apps, s)
+    cid = next(c for c, rec in lv.state["customers"].items() if len(rec["payments"]) >= 2)
+    out = live.Outbox(lv)
+    tw = Tripwire("support", "t", Registry(tmp := s.data / "eu"), lambda e: None)
+    tools = live.Decoyed(live.RawTools(lv, out, {"ticket_id": "M1", "subject": "", "body": ""}), tw)
+    rec = tools.call_tool("get_customer", {"customer_id": cid})
+    real = set(lv.state["customers"][cid]["payments"])
+    fake = [p["id"] for p in rec["payments"] if p["id"] not in real]
+    assert len(fake) == 1 and fake[0].startswith("pi_")
+    n = len(apps.refunds)
+    with pytest.raises(live.DecoyRefused):
+        tools.call_tool("refund", {"payment_intent": fake[0], "amount": 10})
+    with pytest.raises(live.DecoyRefused):                               # and now everything is locked
+        tools.call_tool("refund", {"payment_intent": sorted(real)[0], "amount": 10})
+    assert len(apps.refunds) == n and tmp.exists()
+
+
+def test_unknown_setups_are_refused(tmp_path):
+    with pytest.raises(SystemExit):
+        settings(tmp_path, LIVE_CONFIGS="with,magic")

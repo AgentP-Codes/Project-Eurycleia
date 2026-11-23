@@ -50,6 +50,7 @@ Assuming the vault and key store aren't compromised and the policy is correct:
 | 12 | Recipients are compared after normalisation; display-name tricks, header injection, hidden second recipients and look-alike characters are rejected (an address with non-ASCII letters only on an exact match with trusted data) | ✅ | ✅ |
 | 13 | Deposit boxes: a high-tier box can't be opened without both the vault's key and the holder's key; one holder's key can't open another holder's box; every opening is in that box's own tamper-evident log | ✅ | ✅ |
 | 14 | Customer data (protected or secret values the task has seen, placeholders, stand-ins) never leaves inside a link to a website outside `internal_domains` / `link_domains`, even in a message to the right person | ⚠️ value matching: exact and decoded values | ⚠️ same check (value matching) |
+| 15 | A connector's (MCP server's) tools are recorded when first run; a tool the policy uses that changes afterwards, or a new one it starts to use, is held until a person approves it. Tools whose description shows strong signs of hidden instructions aren't approved on first sight, and `setup` doesn't copy such descriptions into a policy | ✅ MCP proxy | n/a |
 
 ## Detection (helpful, never relied on)
 
@@ -72,6 +73,8 @@ These add oversight but aren't enforced protections: `detect_outbound` pattern m
 - **Availability.** A hostile ticket can make an agent do nothing useful. Scanning text takes time in proportion to its length (about a second per few hundred KB in the worst case), and the local API limits requests to 1 MB.
 
 ## Failure behaviour
+
+**Limits of rule 15 (connectors):** it notices a connector that changes what it says, not one that changes what it does while saying the same. The description scan uses fixed patterns, so it can be evaded and can raise false alarms. And approvals, like the policy, are files in your user account: an agent that can run commands or write files as you could approve a change itself, so don't give the agent you're protecting access to `~/.eurycleia` or the policy file.
 
 | Situation | Behaviour |
 | --- | --- |

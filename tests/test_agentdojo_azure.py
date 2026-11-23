@@ -54,3 +54,14 @@ def test_azure_uses_the_key_when_set_and_needs_https(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "http://res.openai.azure.com")
     with pytest.raises(SystemExit):
         run_live.azure_client()
+
+
+def test_the_azure_job_turns_its_settings_into_a_run_that_resumes(tmp_path):
+    import bench_job
+    argv, out = bench_job.settings({"EURYCLEIA_MODEL": "gpt-5-mini", "BENCH_ATTACK": "tool_knowledge",
+                                    "EURYCLEIA_DATA": str(tmp_path), "BENCH_SUITES": "banking slack"})
+    assert out == tmp_path / "bench" / "gpt-5-mini-tool_knowledge-0.25.jsonl"     # same settings, same file
+    assert argv[:2] == ["--provider", "azure"] and "--budget-aud" in argv and argv.count("--suite") == 2
+    for bad in ({"BENCH_MODEL": "x; rm -rf /"}, {"BENCH_SAMPLE": "2"}, {"BENCH_ATTACK": "../x"}):
+        with pytest.raises(SystemExit):
+            bench_job.settings({"EURYCLEIA_DATA": str(tmp_path), **bad})

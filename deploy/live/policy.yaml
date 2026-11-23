@@ -17,6 +17,7 @@ sources:
       city: protected
       plan: normal
       private_notes: secret          # never shown to the model; only a placeholder
+      payments: normal               # recent Stripe test payments (ids, amounts); Eumaeus adds a decoy
 
   inbox.ticket:
     trust: untrusted                 # anyone on the internet can send an email
@@ -41,7 +42,7 @@ tasks:
     reads:
       crm.customer:
         key: "{customer_id}"
-        fields: [firstname, lastname, email, phone, address, city, plan]
+        fields: [firstname, lastname, email, phone, address, city, plan, payments]
       inbox.ticket:
         key: "{ticket_id}"
         fields: [ticket_id, subject, body]

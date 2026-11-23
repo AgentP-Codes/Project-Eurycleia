@@ -1,6 +1,6 @@
 # Policy reference
 
-A policy is one YAML file, kept in your repo and reviewed like code. `eurycleia init` creates a starter; `eurycleia check` validates and lints it. Unknown keys are errors.
+A policy is one YAML file, kept in your repo and reviewed like code. `eurycleia init` creates a starter; `eurycleia check` validates and lints it. Unknown keys are errors, and so is a key that appears twice in the same place (YAML would quietly keep the last one) or a YAML merge key (`<<`).
 
 ```yaml
 version: 1

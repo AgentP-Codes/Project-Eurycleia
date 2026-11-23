@@ -91,3 +91,15 @@ container only.
 The page is public, so it only ever shows made-up data, and even then email addresses become the customer's id
 or "an outside address", payment ids "a payment" and chat channels "the team channel". What the AI read is never
 shown, only what it did.
+
+## AgentDojo in Azure
+
+The public [AgentDojo](../../benchmarks/agentdojo/README.md) benchmark can run here too, as its own job, so it doesn't depend on your computer staying awake or online. It uses the live test's model and signs in with the same Azure identity (no key), and saves its results on the live test's file share, so a run that stops (a timeout, the budget) carries on where it stopped when you start it again with the same settings.
+
+```bash
+./setup.sh bench                              # AgentDojo's standard attack, a quarter of the attacks, at most A$10
+./setup.sh bench tool_knowledge 0.25 10       # its stronger attack
+./setup.sh bench results                      # when it's done: download and show the summaries
+```
+
+Each run handles every normal task and the chosen share of the attacks, with and without Eurycleia, and takes a few hours. The image (`eurycleia-bench`) is built by GitHub with the live test's image; `BENCH_IMAGE` in settings.env overrides it. It holds code only, and the benchmark's tasks and data are AgentDojo's own made-up ones.

@@ -10,6 +10,8 @@ Plans, not promises. They change as test results and users come in.
 
 ## 0.8
 
+- Done in 0.8.0: connectors whose tools change after you approved them are held until a person approves the change, and tool descriptions with hidden instructions are flagged.
+
 New kinds of agents: tools and connectors that can't change behind your back, memory that remembers where
 information came from, and approvals that show the facts rather than the agent's summary. Results mapped to the
 OWASP Top 10 for Agentic Applications and MITRE ATLAS. Released in steps.

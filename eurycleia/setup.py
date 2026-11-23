@@ -56,6 +56,8 @@ class ScannedTool:
     key_arg: str | None = None
     recipient_arg: str | None = None
     risk: str = "low"
+    warnings: list[str] = field(default_factory=list)      # what the tool-description scan found
+    withheld: bool = False                     # strong signs of poisoning: its description isn't copied
 
 
 # --------------------------------------------------------------------- scanning
@@ -177,16 +179,46 @@ def classify_tool(name: str, description: str, params: list[str]) -> ScannedTool
     return ScannedTool(name, description, params, "act", recipient_arg=recipient, risk=risk)
 
 
+TOOL_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,64}")        # what a connector's tool may be called to get into a policy
+INPUT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]{0,63}")
+
+
 def scan_mcp(command: list[str]) -> list[ScannedTool]:
+    """The connector's tools, classified. Everything a connector says about itself is untrusted: a tool or input
+    with an unusual name (anything but letters, digits, '_', '-', '.') is left out of the policy and reported,
+    since names are written into the policy and shown to the model."""
     from .mcp import StdioMCPClient
+    from .toolpins import list_tools
+    from .toolscan import scan_tools, show
 
     client = StdioMCPClient(command)
     try:
-        tools = client.request("tools/list").get("tools", [])
+        tools = list_tools(client)
     finally:
         client.close()
-    return [classify_tool(t["name"], t.get("description", ""),
-                          list(((t.get("inputSchema") or {}).get("properties") or {}).keys())) for t in tools]
+    findings = scan_tools(tools)
+    out: list[ScannedTool] = []
+    seen: set[str] = set()
+    for t in tools:
+        name = t.get("name")
+        if not isinstance(name, str) or not TOOL_NAME.fullmatch(name) or name in seen:
+            why = "a second tool with the same name" if name in seen else "a tool with an unusual name"
+            out.append(ScannedTool(show(name, 60), "", [], "left out", warnings=[f"{why}: left out of the policy"],
+                                   withheld=True))
+            continue
+        seen.add(name)
+        schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        params = [p for p in props if INPUT_NAME.fullmatch(p)]
+        desc = t.get("description") if isinstance(t.get("description"), str) else ""
+        st = classify_tool(name, desc, params)
+        mine = [f for f in findings if f.tool == name]
+        st.warnings = [f.line() + ("" if f.strong else " (mild)") for f in mine]
+        if len(params) != len(props):
+            st.warnings.append(f"{name}: {len(props) - len(params)} input(s) with unusual names were left out")
+        st.withheld = any(f.strong for f in mine) or len(params) != len(props)
+        out.append(st)
+    return out
 
 
 # ---------------------------------------------------------------- inference
@@ -223,6 +255,22 @@ def _y(v: Any) -> str:
     return json.dumps(v)     # JSON scalars and lists are valid YAML
 
 
+_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]{0,127}")
+
+
+def _s(v: Any) -> str:
+    """A name written into the policy as a key or value: as it is when it's a plain name, otherwise quoted.
+    Names come from outside (a connector's tools, a database's tables, a file's column headings), and a name
+    with a line break or a colon in it must never be able to add lines or settings to the policy."""
+    text = str(v)
+    return text if _PLAIN.fullmatch(text) else json.dumps(text)
+
+
+def _c(v: Any) -> str:
+    """Text for a comment: one line, nothing that isn't printable."""
+    return "".join(ch if ch.isprintable() else " " for ch in str(v))[:200]
+
+
 def _ident(name: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", name.lower())
 
@@ -239,29 +287,31 @@ def build_policy(sources: list[ScannedSource], tools: list[ScannedTool], domain:
          "detect_outbound: true   # also block outbound text that looks like a card, TFN, key...", "",
          "sources:"]
     for s in sources:
-        L.append(f"  {s.name}:")
-        L.append(f"    # scanned from {s.origin}" + (f" ({s.rows_sampled} rows sampled)" if s.kind == "table" else ""))
+        L.append(f"  {_s(s.name)}:")
+        L.append(f"    # scanned from {_c(s.origin)}"
+                 + (f" ({s.rows_sampled} rows sampled)" if s.kind == "table" else ""))
         if s.kind == "documents":
             L += ["    owner: company", "    default_level: protected   # documents not listed are internal",
                   "    key_levels:"]
             for k, f in s.documents.items():
-                L.append(f"      {_y(k)}: {f.level}   # {'; '.join(f.reasons)}")
+                L.append(f"      {_y(k)}: {f.level}   # {_c('; '.join(f.reasons))}")
             if not s.documents:
                 L[-1] = "    key_levels: {}"
             continue
         if s.owner != "company":
             why = (f"has an email column ({s.owner_contact})" if s.owner_contact
                    else f"'{s.owner_field}' links each row to its owner")
-            L.append(f"    owner: {s.owner}   # each record belongs to one person/customer: {why}")
+            L.append(f"    owner: {_s(s.owner)}   # each record belongs to one person/customer: {_c(why)}")
             if s.owner_contact:
-                L.append(f"    owner_contact: {s.owner_contact}")
+                L.append(f"    owner_contact: {_s(s.owner_contact)}")
             if s.owner_field:
-                L.append(f"    owner_field: {s.owner_field}")
+                L.append(f"    owner_field: {_s(s.owner_field)}")
         else:
             L.append("    owner: company   # no owner column found: treated as company data")
         L.append("    fields:")
         for c, f in s.columns.items():
-            L.append(f"      {_y(c)}: {f.level}   # {f.label} ({int(f.confidence * 100)}%): {'; '.join(f.reasons)}")
+            L.append(f"      {_y(c)}: {f.level}   # {_c(f.label)} ({int(f.confidence * 100)}%): "
+                     f"{_c('; '.join(f.reasons))}")
         pseudo = [c for c, f in s.columns.items() if f.kind in PSEUDONYM_KINDS and f.level == "protected"]
         if pseudonyms and pseudo:
             L.append(f"    pseudonymize: {_y(pseudo)}   # the model sees stand-ins; real values only at sinks")
@@ -276,19 +326,21 @@ def build_policy(sources: list[ScannedSource], tools: list[ScannedTool], domain:
     for s in owner_tables:
         tname = f"{_singular(s.table or s.name.split('.')[-1])}_request"
         public_docs = [(d, [k for k, f in d.documents.items() if f.level == "normal"]) for d in docs]
-        L += [f"  {tname}:",
-              f"    description: Handle one request for a single {_singular(s.table or 'record')}.",
-              f"    trusted: [{s.owner}]   # your app must set this from a verified sender or login, never from text",
+        what = _singular(s.table or "record")
+        L += [f"  {_s(tname)}:",
+              f"    description: {_y('Handle one request for a single ' + what + '.')}",
+              f"    trusted: [{_s(s.owner)}]   # your app must set this from a verified sender or login, "
+              "never from text",
               "    reads:",
-              f"      {s.name}:",
+              f"      {_s(s.name)}:",
               f"        key: {_y('{' + s.owner + '}')}",
               f"        fields: {_y(list(s.columns))}"]
         for d, keys in public_docs:
             if keys:
-                L += [f"      {d.name}:", f"        keys: {_y(keys)}", "        fields: [name, body]"]
+                L += [f"      {_s(d.name)}:", f"        keys: {_y(keys)}", "        fields: [name, body]"]
         related = [o.name for o in sources if o.owner == s.owner and o is not s and o.kind == "table"]
         if related:
-            L.append(f"      # also linked to this owner: {', '.join(related)} "
+            L.append(f"      # also linked to this owner: {_c(', '.join(related))} "
                      "(add a read with a trusted key if needed)")
         L += ["    sinks:",
               "      email.send:",
@@ -297,34 +349,39 @@ def build_policy(sources: list[ScannedSource], tools: list[ScannedTool], domain:
               "        args: [to, subject, body]",
               "        max_calls: 3"]
         for t in act_tools:
-            L.append(f"      mcp.{t.name}:   # from MCP tool '{t.name}' ({t.risk} risk from its name)")
+            L.append(f"      {_s('mcp.' + t.name)}:   # from MCP tool '{_c(t.name)}' ({t.risk} risk from its name)")
             if t.recipient_arg:
-                L += [f"        recipient_arg: {t.recipient_arg}",
+                L += [f"        recipient_arg: {_s(t.recipient_arg)}",
                       f"        allowed_recipients: [{_y(f'{s.name}:{{{s.owner}}}.{s.owner_contact}')}]"]
             L += [f"        args: {_y(t.params)}", f"        risk: {t.risk}", "        max_calls: 3"]
 
     L += ["", "tools:"]
     for s in owner_tables:
         base = _singular(s.table or s.name.split(".")[-1])
-        L.append(f"  get_{base}: {{read: {s.name}, key_arg: {s.owner}, "
+        L.append(f"  {_s('get_' + base)}: {{read: {_s(s.name)}, key_arg: {_s(s.owner)}, "
                  f"description: {_y(f'Look up the {base} this task is about.')}}}")
     for d in docs:
-        L.append(f"  get_{_ident(d.name.split('.')[-1])}_doc: {{read: {d.name}, key_arg: name, "
+        L.append(f"  get_{_ident(d.name.split('.')[-1])}_doc: {{read: {_s(d.name)}, key_arg: name, "
                  f"description: \"Read a document by name.\"}}")
-    L.append("  send_email: {act: email.send, description: \"Send an email.\", "
-             "params: {to: string, subject: string, body: string}}")
+    if not any(t.name == "send_email" for t in act_tools):       # the connector's own send_email takes its place
+        L.append("  send_email: {act: email.send, description: \"Send an email.\", "
+                 "params: {to: string, subject: string, body: string}}")
     for t in act_tools:
-        L.append(f"  {t.name}: {{act: mcp.{t.name}, description: {_y(t.description or t.name)}, "
+        if t.withheld:                  # never hand the model a description with signs of poisoning
+            L.append(f"  # {_c(t.name)}: the connector's own description was left out (see the setup report); "
+                     "write your own if you keep this tool")
+        desc = t.name.replace("_", " ") if t.withheld else (t.description or t.name)
+        L.append(f"  {_s(t.name)}: {{act: {_s('mcp.' + t.name)}, description: {_y(desc)}, "
                  f"params: {_y({p: 'string' for p in t.params})}}}")
-    if tools:
+    if any(t.role != "left out" for t in tools):
         L += ["", "upstream:   # for `eurycleia serve` in front of the scanned MCP server", "  sources: {}",
               "  sinks:"]
         for t in act_tools:
-            L.append(f"    mcp.{t.name}: {{tool: {t.name}}}")
+            L.append(f"    {_s('mcp.' + t.name)}: {{tool: {_s(t.name)}}}")
         reads = [t for t in tools if t.role == "read"]
         if reads:
             L.append("  # read tools found (map each to a source above if it returns one record):")
-            L += [f"  #   {t.name}({', '.join(t.params)})" for t in reads]
+            L += [f"  #   {_c(t.name)}({_c(', '.join(t.params))})" for t in reads]
     return "\n".join(L) + "\n"
 
 
@@ -429,9 +486,18 @@ def build_report(sources: list[ScannedSource], tools: list[ScannedTool], checks:
         L.append("")
     if tools:
         L += ["## MCP tools", "", "| Tool | Role | Risk | Recipient arg |", "| --- | --- | --- | --- |"]
-        L += [f"| {t.name} | {t.role} | {t.risk if t.role == 'act' else '-'} | {t.recipient_arg or '-'} |"
-              for t in tools]
+        L += [f"| {_c(t.name).replace('|', '/')} | {t.role} | {t.risk if t.role == 'act' else '-'} | "
+              f"{_c(t.recipient_arg or '-')} |" for t in tools]
         L.append("")
+        warned = [t for t in tools if t.warnings]
+        if warned:
+            L += ["### Warnings about what the tools say", "",
+                  "A connector's tool descriptions are read by the AI as instructions. These have signs of "
+                  "hidden instructions (\"tool poisoning\"). Where a sign is strong, the description was left "
+                  "out of the policy. Warnings aren't proof either way: read the connector's tools yourself.", ""]
+            L += [f"- {w}" + (" **(description left out)**" if t.withheld and "(mild)" not in w else "")
+                  for t in warned for w in t.warnings]
+            L.append("")
     L += ["## Checks", ""] + [f"- {c}" for c in checks] + [""]
     return "\n".join(L)
 

@@ -5,7 +5,7 @@ A checklist for running Eurycleia in front of real agents and real data.
 ## 1. Install and pin
 
 ```bash
-pip install "eurycleia[all]==0.7.1"
+pip install "eurycleia[all]==0.8.0"
 ```
 
 Pin the version. Read the changelog before upgrading, and rerun `eurycleia test` in CI on every upgrade.
@@ -79,6 +79,8 @@ For the sharpest values (cards, bank accounts, IDs), keep them in deposit boxes 
 - **Approvals:** pass an `approver` to the holder key service to require a person (e.g. an HR manager) to allow each opening of a high-security box.
 - **Recovery:** create a company recovery key pair, keep the private half offline (e.g. in a safe), and pass its public key as `recovery_public_key`. It's the break-glass if a holder loses their key.
 - **Erasure:** `eurycleia boxes forget --holder customer:12` for a deletion request. A tombstone (a keyed fingerprint, no name) then stops their boxes being made again, so a later import or sync can't quietly bring their data back; `boxes put` skips their rows. If they genuinely return, `eurycleia boxes unforget --holder customer:12`. A record the vault read just before may still be in its encrypted cache for up to `cache_ttl_seconds`; restart the vault, or call `vault.cache.invalidate_source(...)` for the box source, to drop it at once. The tombstone covers the usual spellings of an id (`customer:012`, `customer:12.0`).
+- **Connectors that change (rug pulls):** `eurycleia serve` records each connector's tools the first time it runs it (in `~/.eurycleia/tool-pins/`, private to your user). Whenever a tool your policy uses changes after that, or is new, it's held: the agent doesn't see it and calls to it are refused, and a warning goes to the app's log and the audit log. `eurycleia tools review` shows what changed in plain words, plus any warnings about hidden instructions in the new description; `eurycleia tools approve <id>` (or `--tool <name>` for one) lets the change through, without restarting. In watch mode (`--shadow`) or with `--on-tool-change warn`, changes are reported but nothing is held. A connector that updates itself on every start (`npx -y some-server@latest`, say) will be held after each update that changes its tools: pin a version in the command to avoid surprises.
+- **Lockdown, with Eumaeus:** after `eumaeus link eurycleia`, a decoy used by an agent locks Eurycleia down, in `serve` and `api`: every action in every task is refused (reads still work) until a person lifts it with `eurycleia lockdown clear` or `eumaeus clear`. `eurycleia lockdown status` shows whether it's in force. The two sign what they send each other with a key in each one's own folder, and ignore anything unsigned; anyone who can write files in your account could lift a lockdown, so the same rule applies as for approvals: don't give the agent you're protecting access to `~/.eurycleia` or `~/.eumaeus`. A lockdown doesn't revoke the agent's real logins.
 - **Restored old copies:** the box logs are tamper-evident, but a whole older copy of the database looks consistent on its own (it would bring back a forgotten customer and hide later reveals). Set `--rollback-guard` (or `EURYCLEIA_ROLLBACK_GUARD`) to a file on *different* storage from the database: it records how far each box's log has got, and any box whose log is behind it is refused. `eurycleia boxes check-rollback` lists them. If you restore a backup on purpose, restore the guard file from the same moment.
 
 ## 10. Logging

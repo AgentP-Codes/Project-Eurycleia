@@ -9,7 +9,7 @@ Adapters:  eurycleia.connectors, eurycleia.mcp (proxy), eurycleia.llm (models)
 Tooling:   eurycleia.attacks (attack suite), `eurycleia` CLI
 """
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 from .audit import AuditLog  # noqa: E402
 from .policy import Policy, PolicyError  # noqa: E402

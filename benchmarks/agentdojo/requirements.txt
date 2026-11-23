@@ -1,2 +1,4 @@
 # AgentDojo benchmark only (not needed for eurycleia itself)
 agentdojo==0.1.35
+# The Azure job's image installs bench.lock (this plus eurycleia's own needs, with checksums). To refresh it:
+#   uv pip compile requirements.txt ../../requirements/runtime.in --universal --generate-hashes --python-version 3.12 -o bench.lock

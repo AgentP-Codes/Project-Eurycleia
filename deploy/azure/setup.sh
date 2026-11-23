@@ -15,7 +15,9 @@
 #   ./setup.sh model openai MODEL   switch the agent's model (model azure gpt-5-mini switches back)
 #   ./setup.sh budget 5             the agent's daily model budget in A$
 #   ./setup.sh approver slack       who approves refunds: slack (a person), simulated (unattended rounds) or none
+#   ./setup.sh setups decoys,both   which setups each test email goes through: without, with, decoys, both
 #   ./setup.sh demo                 a public live page of the test as it runs (./setup.sh demo off removes it)
+#   ./setup.sh bench [ATTACK] [SAMPLE] [BUDGET]   run AgentDojo in Azure with the live test's model (bench results)
 #   ./setup.sh status     what's set up, and the last few runs
 #   ./setup.sh remove     delete EVERYTHING in the resource group, including the AI model
 #
@@ -37,6 +39,7 @@ STORAGE="${STORAGE:-steurycleia$SUFFIX}"
 ENVIRONMENT="eurycleia-lab"      # a workload-profiles environment: "express" ones have no jobs or storage mounts
 IDENTITY="eurycleia-agent-id"
 SHARE="live-data"
+BENCH_IMAGE="${BENCH_IMAGE:-${IMAGE/eurycleia-live/eurycleia-bench}}"
 
 say() { printf '\n== %s\n' "$*"; }
 
@@ -126,8 +129,9 @@ storage() {
     --access-mode ReadWrite -o none
 }
 
-job_yaml() {   # name, trigger (Schedule|Manual), cron, command (JSON list), args (JSON list)
-  local env_id endpoint id_res client_id registry=""
+job_yaml() {   # name, trigger (Schedule|Manual), cron, command (JSON list), args (JSON list) [image cpu memory timeout]
+  local env_id endpoint id_res client_id registry="" image="${6:-$IMAGE}" cpu="${7:-0.25}" mem="${8:-0.5Gi}"
+  local timeout="${9:-1500}"
   env_id="$(az containerapp env show -n "$ENVIRONMENT" -g "$RESOURCE_GROUP" --query id -o tsv)"
   endpoint="https://$AI_RESOURCE.openai.azure.com"
   id_res="$(az identity show -n "$IDENTITY" -g "$RESOURCE_GROUP" --query id -o tsv)"
@@ -149,7 +153,7 @@ properties:
   workloadProfileName: Consumption
   configuration:
     triggerType: $2
-    replicaTimeout: 1500
+    replicaTimeout: $timeout
     replicaRetryLimit: 0
 $registry
 $( [ "$2" = Schedule ] && printf '    scheduleTriggerConfig:\n      cronExpression: "%s"\n      parallelism: 1\n      replicaCompletionCount: 1\n' "$3" \
@@ -157,10 +161,10 @@ $( [ "$2" = Schedule ] && printf '    scheduleTriggerConfig:\n      cronExpressi
   template:
     containers:
       - name: agent
-        image: $IMAGE
+        image: $image
         command: $4
         args: $5
-        resources: {cpu: 0.25, memory: 0.5Gi}
+        resources: {cpu: $cpu, memory: $mem}
         env:
           - {name: TEST_INBOX, value: "$TEST_INBOX"}
           - {name: SLACK_SUPPORT_CHANNEL, value: "$SLACK_SUPPORT_CHANNEL"}
@@ -181,7 +185,7 @@ $( [ "$2" = Schedule ] && printf '    scheduleTriggerConfig:\n      cronExpressi
 YAML
 }
 
-make_job() {   # name, trigger, cron, command, args
+make_job() {   # name, trigger, cron, command, args [image cpu memory timeout]
   local f; f="$(mktemp)"
   job_yaml "$@" > "$f"
   if az containerapp job show -n "$1" -g "$RESOURCE_GROUP" >/dev/null 2>&1; then
@@ -198,6 +202,32 @@ jobs() {
   make_job eurycleia-report Schedule "55 21 * * *" '["python", "deploy/live/live.py"]' '["post-report"]'
   make_job eurycleia-seed Manual "" '["python", "deploy/live/seed.py"]' '[]'
   make_job eurycleia-feed Manual "" '["python", "deploy/live/feeder.py"]' '[]'
+  # AgentDojo with the same model and identity, up to 12 hours a run (it carries on where it stopped if started again)
+  make_job eurycleia-bench Manual "" '["python", "benchmarks/agentdojo/bench_job.py"]' '[]' \
+    "$BENCH_IMAGE" 0.5 1Gi 43200
+}
+
+bench() {   # [attack] [sample] [budget A$] | results
+  if [ "${1:-}" = "results" ]; then
+    local key out; key="$(az storage account keys list -n "$STORAGE" -g "$RESOURCE_GROUP" --query '[0].value' -o tsv)"
+    out="$HERE/bench-results"; mkdir -p "$out"
+    az storage file download-batch --account-name "$STORAGE" --account-key "$key" -s "$SHARE" \
+      --pattern 'bench/*' -d "$out" -o none
+    for f in "$out"/bench/*.summary.txt; do [ -f "$f" ] && { echo; echo "== $(basename "$f" .summary.txt)"; cat "$f"; }; done
+    echo; echo "Downloaded to $out/bench (results files are .jsonl; download them from Cloud Shell to send them on)."
+    return
+  fi
+  local attack="${1:-important_instructions}" sample="${2:-0.25}" budget="${3:-10}"
+  [[ "$attack" =~ ^[a-z_]+$ ]] && [[ "$sample" =~ ^(0?\.[0-9]+|1)$ ]] && [[ "$budget" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "usage: ./setup.sh bench [ATTACK] [SAMPLE 0.25] [BUDGET_AUD 10]   or   ./setup.sh bench results"; exit 1; }
+  az containerapp job show -n eurycleia-bench -g "$RESOURCE_GROUP" >/dev/null 2>&1 || \
+    make_job eurycleia-bench Manual "" '["python", "benchmarks/agentdojo/bench_job.py"]' '[]' "$BENCH_IMAGE" 0.5 1Gi 43200
+  az containerapp job update -n eurycleia-bench -g "$RESOURCE_GROUP" -o none --set-env-vars \
+    "BENCH_MODEL=$MODEL_DEPLOYMENT" "BENCH_ATTACK=$attack" "BENCH_SAMPLE=$sample" "BENCH_BUDGET_AUD=$budget"
+  az containerapp job start -n eurycleia-bench -g "$RESOURCE_GROUP" -o none
+  echo "AgentDojo started in Azure: $MODEL_DEPLOYMENT, attack $attack, $sample of the attacks, at most A\$$budget."
+  echo "It runs without your computer (a few hours). Logs: portal -> Container Apps jobs -> eurycleia-bench."
+  echo "When it's done: ./setup.sh bench results"
 }
 
 demo() {   # the live demo page: a public static website on the storage account, fed by the agent as it works
@@ -289,12 +319,17 @@ case "${1:-}" in
            [ -n "${4:-}" ] && vars+=("EURYCLEIA_APPROVERS=$4")
            az containerapp job update -n eurycleia-agent -g "$RESOURCE_GROUP" --set-env-vars "${vars[@]}" -o none
            echo "Refunds are now approved by: $2." ;;
+  setups)  [[ "${2:-}" =~ ^(without|with|decoys|both)(,(without|with|decoys|both))*$ ]] || {
+             echo "usage: ./setup.sh setups without,with   (or decoys,both: Eumaeus alone, and Eumaeus with Eurycleia)"
+             exit 1; }
+           set_env LIVE_CONFIGS "$2"; echo "Each test email now goes through: $2." ;;
   budget)  [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "usage: ./setup.sh budget AUD_PER_DAY"; exit 1; }
            set_env EURYCLEIA_BUDGET_AUD "$2"; echo "Daily model budget: A\$$2." ;;
   demo)    if [ "${2:-}" = "off" ]; then demo_off; else demo; fi ;;
+  bench)   bench "${2:-}" "${3:-}" "${4:-}" ;;
   status)  status ;;
   remove)
     read -r -p "Delete resource group $RESOURCE_GROUP and EVERYTHING in it, including the AI model? Type its name: " ok
     [ "$ok" = "$RESOURCE_GROUP" ] && az group delete -n "$RESOURCE_GROUP" --yes --no-wait && echo "Deleting." ;;
-  *) sed -n '5,18p' "$0" ;;
+  *) sed -n '5,20p' "$0" ;;
 esac
