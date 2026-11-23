@@ -4,6 +4,9 @@
 
 **A data vault for AI agents.** Eurycleia sits between an AI agent and your company's data. Each task sees only the data it needs, personal details and secrets are hidden from the AI, and data can only go where your policy allows, even if a prompt injection takes the agent over. It reduces risk; it doesn't remove it (see [Limitations](#limitations)).
 
+<p align="center"><img src="docs/images/demo.gif" alt="python -m demo: an agent fully obeys hidden instructions in a support ticket. With direct access it leaks 15 items; behind Eurycleia every export and outside email is blocked and nothing leaks, while a normal refund request still works" width="900"></p>
+<p align="center"><sub>The built-in demo (<code>python -m demo</code> in a copy of this repository): made-up data and a scripted agent that obeys every hidden instruction.</sub></p>
+
 > [!WARNING]
 > **Early release: use at your own risk.** Eurycleia is new and hasn't been fully tested in real-world use. It hasn't had an independent security review, and live testing so far covers a few apps and models (see [What's simulated](#whats-simulated), [live test results](docs/live-test-results.md) and [real-model results](docs/real-model-results.md)). Test results don't guarantee it will stop every attack. Don't rely on it as your only protection for sensitive or regulated data, and test it thoroughly in your own environment first. Things may change between versions.
 >
